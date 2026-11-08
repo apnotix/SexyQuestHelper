@@ -1,0 +1,12 @@
+## Interface: 120100, 16001
+## Version: 1.0.0
+## Title: SexyQuestHelper
+## Author: apnotix
+## Notes: Shows whether all group members running this addon have the same quests in the current zone
+## Notes-deDE: Zeigt an, ob alle Gruppenmitglieder mit diesem Addon die gleichen Quests im aktuellen Gebiet haben
+## Category: Quests
+## IconTexture: Interface\AddOns\SexyQuestHelper\icon.tga
+## DefaultState: Enabled
+## SavedVariables: SexyQuestHelperDB
+
+SexyQuestHelper.lua

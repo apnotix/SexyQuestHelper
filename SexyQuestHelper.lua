@@ -1,0 +1,517 @@
+-- SexyQuestHelper: vergleicht die Quests des aktuellen Gebiets mit allen
+-- Gruppenmitgliedern, die ebenfalls dieses Addon nutzen.
+--
+-- Ablauf: Jeder Client liest seine Quests des aktuellen Gebiets (Questlog-
+-- Kategorie = Gebietsname), sendet die Quest-IDs per Addon-Nachricht an die
+-- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
+
+local PREFIX = "SexyQuestHelper"
+local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
+local IGNORE_AFTER_SCAN = 2 -- Sekunden, in denen eigene Auf-/Zuklapp-Events ignoriert werden
+local CHUNK_SIZE = 200      -- Zeichen Quest-IDs pro Nachricht (Limit: 255 inkl. Header)
+
+local isDE = GetLocale() == "deDE"
+local function T(de, en) return isDE and de or en end
+
+local frame = CreateFrame("Frame")
+local ui                      -- Anzeigefenster (lazy)
+local myZone, myIds, myTitles = "", {}, {}
+local mySignature = ""
+local members = {}            -- [name] = { zone = "", ids = { [id] = true } }
+local scanTimer, ignoreUntil = nil, 0
+local Refresh
+local anyAddonMsgs = 0
+local recvCount, lastRecv, lastReply, prefixOk = 0, "-", 0, nil
+local testMode = false -- /sqh test: simuliert ein Gruppenmitglied
+
+---------------------------------------------------------------------------
+-- Questlog lesen
+---------------------------------------------------------------------------
+
+local function NumEntries()
+	if C_QuestLog and C_QuestLog.GetNumQuestLogEntries then
+		return (C_QuestLog.GetNumQuestLogEntries())
+	end
+	return (GetNumQuestLogEntries and GetNumQuestLogEntries()) or 0
+end
+
+-- Liefert title, isHeader, isCollapsed, questID (Retail/neue Clients oder Legacy-API)
+local function GetEntry(i)
+	if C_QuestLog and C_QuestLog.GetInfo then
+		local info = C_QuestLog.GetInfo(i)
+		if info then return info.title, info.isHeader, info.isCollapsed, info.questID end
+	elseif GetQuestLogTitle then
+		local title, _, _, isHeader, isCollapsed, _, _, questID = GetQuestLogTitle(i)
+		return title, isHeader, isCollapsed, questID
+	end
+end
+
+local function SetHeaderCollapsed(i, collapsed)
+	local fn
+	if collapsed then
+		fn = (C_QuestLog and C_QuestLog.CollapseQuestHeader) or CollapseQuestHeader
+	else
+		fn = (C_QuestLog and C_QuestLog.ExpandQuestHeader) or ExpandQuestHeader
+	end
+	if fn then fn(i) end
+end
+
+local function CurrentZone()
+	return (GetRealZoneText and GetRealZoneText()) or (GetZoneText and GetZoneText()) or ""
+end
+
+-- Klappt zugeklappte Kategorien kurz auf (sonst fehlen deren Quests in der
+-- Liste), liest die Quests der aktuellen Zone und klappt wieder zu.
+local function ScanQuests()
+	local zone = CurrentZone()
+	local ids, titles = {}, {}
+
+	local reopened = {}
+	for i = NumEntries(), 1, -1 do
+		local title, isHeader, isCollapsed = GetEntry(i)
+		if isHeader and isCollapsed then
+			SetHeaderCollapsed(i, false)
+			reopened[title] = true
+		end
+	end
+
+	local inZone = false
+	for i = 1, NumEntries() do
+		local title, isHeader, _, questID = GetEntry(i)
+		if isHeader then
+			inZone = (title == zone)
+		elseif inZone and questID and questID > 0 then
+			ids[questID] = true
+			titles[questID] = title
+		end
+	end
+
+	for i = NumEntries(), 1, -1 do
+		local title, isHeader = GetEntry(i)
+		if isHeader and reopened[title] then
+			SetHeaderCollapsed(i, true)
+		end
+	end
+
+	return zone, ids, titles
+end
+
+local function SortedIds(ids)
+	local list = {}
+	for id in pairs(ids) do list[#list + 1] = id end
+	table.sort(list)
+	return list
+end
+
+---------------------------------------------------------------------------
+-- Kommunikation
+---------------------------------------------------------------------------
+
+local function GroupChannel()
+	if IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then return "INSTANCE_CHAT" end
+	if IsInRaid() then return "RAID" end
+	if IsInGroup() then return "PARTY" end
+end
+
+local sendCount, lastSendResult = 0, nil
+local function Send(msg, channel)
+	local fn = (C_ChatInfo and C_ChatInfo.SendAddonMessage) or SendAddonMessage
+	sendCount = sendCount + 1
+	lastSendResult = fn(PREFIX, msg, channel)
+end
+
+local function Broadcast()
+	local channel = GroupChannel()
+	if not channel then return end
+
+	local zone = myZone:gsub("|", "")
+	local list = SortedIds(myIds)
+	local first = true
+	local chunk = ""
+
+	local function flush()
+		Send((first and ("H|" .. zone .. "|") or "A|") .. chunk, channel)
+		first, chunk = false, ""
+	end
+
+	for _, id in ipairs(list) do
+		local s = tostring(id)
+		if #chunk + #s + 1 > CHUNK_SIZE then flush() end
+		chunk = (chunk == "") and s or (chunk .. "," .. s)
+	end
+	-- Auch eine leere Liste senden, damit andere "keine Quests" von "kein Addon" unterscheiden.
+	if first or chunk ~= "" then flush() end
+end
+
+local function OnAddonMessage(prefix, msg, _, sender)
+	anyAddonMsgs = anyAddonMsgs + 1
+	if prefix ~= PREFIX then return end
+	-- Realm-Suffix ("Name-Realm", auf Forever teils mit abgekuerztem/doppeltem Realm) abschneiden
+	local name = tostring(sender):match("^([^-]+)") or tostring(sender)
+	if name == UnitName("player") then return end
+	recvCount, lastRecv = recvCount + 1, tostring(sender)
+
+	local kind, rest = msg:match("^(%a)|(.*)$")
+	if kind == "H" then
+		local zone, idStr = rest:match("^([^|]*)|(.*)$")
+		if not zone then return end
+		members[name] = { zone = zone, ids = {} }
+		rest = idStr
+	elseif kind == "A" then
+		if not members[name] then return end
+	elseif kind == "R" then
+		-- Anfrage eines Mitglieds, das uns noch nicht kennt: Liste erneut senden
+		if GetTime() - lastReply > 3 then
+			lastReply = GetTime()
+			Broadcast()
+		end
+		return
+	else
+		return
+	end
+
+	for id in rest:gmatch("%d+") do
+		members[name].ids[tonumber(id)] = true
+	end
+	Refresh()
+end
+
+---------------------------------------------------------------------------
+-- Anzeige
+---------------------------------------------------------------------------
+
+local WIDTH, ROW_H = 330, 16
+local forceShow = false     -- per /sqh erzwungen (auch ohne Unterschiede)
+local dismissedSig = nil    -- Unterschiede, die der Nutzer weggeklickt hat
+local rowPool = {}
+local requested = {}
+
+local function QuestName(id)
+	if myTitles[id] then return myTitles[id] end
+	local title = C_QuestLog and C_QuestLog.GetTitleForQuestID and C_QuestLog.GetTitleForQuestID(id)
+	if title then return title end
+	if C_QuestLog and C_QuestLog.RequestLoadQuestByID and not requested[id] then
+		requested[id] = true
+		C_QuestLog.RequestLoadQuestByID(id) -- Antwort: QUEST_DATA_LOAD_RESULT -> Refresh
+	end
+	return "Quest " .. id
+end
+
+local function QuestLink(id)
+	local link = GetQuestLink and GetQuestLink(id)
+	if link then return link end
+	return ("|cffffff00|Hquest:%d:%d|h[%s]|h|r"):format(id, UnitLevel("player"), QuestName(id))
+end
+
+local function OpenQuest(id)
+	if IsShiftKeyDown() then
+		if not ChatEdit_InsertLink(QuestLink(id)) then
+			print("SexyQuestHelper: " .. QuestLink(id))
+		end
+		return
+	end
+	if not myIds[id] then
+		print("SexyQuestHelper: " .. QuestLink(id) .. " - " .. T("nicht in deinem Questlog.", "not in your quest log."))
+		return
+	end
+	if QuestMapFrame_OpenToQuestDetails then -- Retail-Stil
+		pcall(QuestMapFrame_OpenToQuestDetails, id)
+		return
+	end
+	local index = (C_QuestLog and C_QuestLog.GetLogIndexForQuestID and C_QuestLog.GetLogIndexForQuestID(id))
+		or (GetQuestLogIndexByID and GetQuestLogIndexByID(id))
+	if index and index > 0 then -- Classic-Stil
+		if QuestLog_SetSelection then pcall(QuestLog_SetSelection, index)
+		elseif SelectQuestLogEntry then pcall(SelectQuestLogEntry, index) end
+		if QuestLogFrame then ShowUIPanel(QuestLogFrame) elseif ToggleQuestLog then ToggleQuestLog() end
+	end
+end
+
+local function GroupNames()
+	local names = {}
+	local me = UnitName("player")
+	local prefix, count = "party", GetNumSubgroupMembers()
+	if IsInRaid() then prefix, count = "raid", GetNumGroupMembers() end
+	for i = 1, count do
+		local name = UnitName(prefix .. i)
+		if name and name ~= me then names[#names + 1] = name end
+	end
+	if testMode then names[#names + 1] = "Testmate" end
+	return names
+end
+
+-- Liefert Zeilen { text, questID }, ob es Quest-Unterschiede gibt und deren Signatur.
+local function BuildRows()
+	local rows, sigParts, hasDiff = {}, {}, false
+	local inGroup = GroupChannel() or testMode
+
+	if inGroup then
+		for _, name in ipairs(GroupNames()) do
+			local m = members[name]
+			if not m then
+				rows[#rows + 1] = { ("|cff888888%s: %s|r"):format(name, T("kein Addon / keine Daten", "no addon / no data")) }
+			elseif m.zone ~= myZone then
+				rows[#rows + 1] = { ("|cff888888%s: %s (%s)|r"):format(name, T("anderes Gebiet", "different zone"), m.zone) }
+			else
+				local iLack, theyLack = {}, {}
+				for id in pairs(m.ids) do
+					if not myIds[id] then iLack[#iLack + 1] = id end
+				end
+				for id in pairs(myIds) do
+					if not m.ids[id] then theyLack[#theyLack + 1] = id end
+				end
+				table.sort(iLack); table.sort(theyLack)
+
+				if #iLack + #theyLack > 0 then
+					hasDiff = true
+					sigParts[#sigParts + 1] = name .. ":" .. table.concat(iLack, ",") .. "/" .. table.concat(theyLack, ",")
+					rows[#rows + 1] = { ("|cffffd100%s|r"):format(name) }
+					for _, id in ipairs(iLack) do
+						rows[#rows + 1] = { ("  |cffff6060%s|r %s"):format(T("Dir fehlt:", "You lack:"), QuestName(id)), id }
+					end
+					for _, id in ipairs(theyLack) do
+						rows[#rows + 1] = { ("  |cff60c0ff%s|r %s"):format(T("Hat nicht:", "Lacks:"), QuestName(id)), id }
+					end
+				end
+			end
+		end
+	end
+
+	if not hasDiff then
+		local msg = inGroup and T("Alle haben die gleichen Quests", "Everyone has the same quests")
+			or T("Nicht in einer Gruppe.", "Not in a group.")
+		table.insert(rows, 1, { "|cff00ff00" .. msg .. "|r" })
+	end
+	return rows, hasDiff, table.concat(sigParts, ";")
+end
+
+local function GetRow(i)
+	local row = rowPool[i]
+	if row then return row end
+
+	row = CreateFrame("Button", nil, ui)
+	row:SetSize(WIDTH - 16, ROW_H)
+	row:SetPoint("TOPLEFT", ui, "TOPLEFT", 8, -26 - (i - 1) * ROW_H)
+	row:RegisterForClicks("LeftButtonUp")
+	row.hl = row:CreateTexture(nil, "HIGHLIGHT")
+	row.hl:SetAllPoints()
+	row.hl:SetColorTexture(1, 1, 1, 0.15)
+	row.fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.fs:SetAllPoints()
+	row.fs:SetJustifyH("LEFT")
+	row.fs:SetWordWrap(false)
+
+	row:SetScript("OnEnter", function(self)
+		if not self.questId then return end
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		local ok = pcall(GameTooltip.SetHyperlink, GameTooltip, ("quest:%d:%d"):format(self.questId, UnitLevel("player")))
+		if not ok then
+			GameTooltip:ClearLines()
+			GameTooltip:AddLine(QuestName(self.questId))
+		end
+		GameTooltip:AddLine(T("Klick: im Questlog öffnen", "Click: open in quest log"), 0.6, 0.6, 0.6)
+		GameTooltip:AddLine(T("Shift-Klick: Link in den Chat", "Shift-click: link into chat"), 0.6, 0.6, 0.6)
+		GameTooltip:Show()
+	end)
+	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	row:SetScript("OnClick", function(self)
+		if self.questId then OpenQuest(self.questId) end
+	end)
+
+	rowPool[i] = row
+	return row
+end
+
+local function CreateUI()
+	local f = CreateFrame("Frame", "SexyQuestHelperFrame", UIParent, "BackdropTemplate")
+	f:SetSize(WIDTH, 60)
+	f:SetFrameStrata("MEDIUM")
+	f:SetClampedToScreen(true)
+	f:SetMovable(true)
+	f:EnableMouse(true)
+	f:RegisterForDrag("LeftButton")
+	f:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		edgeSize = 12,
+		insets = { left = 3, right = 3, top = 3, bottom = 3 },
+	})
+	f:SetBackdropColor(0, 0, 0, 0.8)
+
+	local pos = SexyQuestHelperDB.pos
+	if pos then
+		f:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
+	else
+		f:SetPoint("CENTER", UIParent, "CENTER", 0, 200)
+	end
+
+	f:SetScript("OnDragStart", f.StartMoving)
+	f:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		local point, _, relPoint, x, y = self:GetPoint()
+		SexyQuestHelperDB.pos = { point = point, relPoint = relPoint, x = x, y = y }
+	end)
+
+	f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	f.title:SetPoint("TOPLEFT", 8, -8)
+
+	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+	close:SetPoint("TOPRIGHT", 2, 2)
+	close:SetScript("OnClick", function()
+		forceShow = false
+		dismissedSig = f.sig -- erscheint erst wieder bei neuen Unterschieden
+		f:Hide()
+	end)
+
+	f:Hide()
+	return f
+end
+
+function Refresh()
+	if not ui then return end
+	local rows, hasDiff, sig = BuildRows()
+	ui.sig = sig
+
+	if not (forceShow or (hasDiff and sig ~= dismissedSig)) then
+		ui:Hide()
+		return
+	end
+
+	ui.title:SetText(("SexyQuestHelper |cffaaaaaa- %s|r"):format(myZone ~= "" and myZone or "?"))
+	for i, data in ipairs(rows) do
+		local row = GetRow(i)
+		row.questId = data[2]
+		row:EnableMouse(data[2] ~= nil)
+		row.fs:SetText(data[1])
+		row:Show()
+	end
+	for i = #rows + 1, #rowPool do rowPool[i]:Hide() end
+
+	ui:SetHeight(34 + #rows * ROW_H)
+	ui:Show()
+end
+
+---------------------------------------------------------------------------
+-- Scan-Steuerung
+---------------------------------------------------------------------------
+
+local function DoScan(forceBroadcast)
+	scanTimer = nil
+	myZone, myIds, myTitles = ScanQuests()
+	ignoreUntil = GetTime() + IGNORE_AFTER_SCAN
+
+	local signature = myZone .. ":" .. table.concat(SortedIds(myIds), ",")
+	if forceBroadcast or signature ~= mySignature then
+		mySignature = signature
+		Broadcast()
+	end
+	if forceBroadcast and GroupChannel() then Send("R|", GroupChannel()) end
+	Refresh()
+end
+
+local function QueueScan(forceBroadcast)
+	if scanTimer and not forceBroadcast then return end
+	scanTimer = true
+	C_Timer.After(SCAN_DELAY, function() DoScan(forceBroadcast) end)
+end
+
+local function PruneMembers()
+	local present = {}
+	for _, name in ipairs(GroupNames()) do present[name] = true end
+	for name in pairs(members) do
+		if not present[name] then members[name] = nil end
+	end
+end
+
+frame:SetScript("OnEvent", function(_, event, ...)
+	if event == "CHAT_MSG_ADDON" then
+		OnAddonMessage(...)
+	elseif event == "QUEST_DATA_LOAD_RESULT" then
+		Refresh()
+	elseif event == "QUEST_LOG_UPDATE" then
+		if GetTime() >= ignoreUntil then QueueScan(false) end
+	elseif event == "GROUP_ROSTER_UPDATE" then
+		PruneMembers()
+		QueueScan(true) -- neue Mitglieder brauchen unsere Liste
+		Refresh()
+	elseif event == "PLAYER_LOGIN" then
+		SexyQuestHelperDB = SexyQuestHelperDB or {}
+		local register = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or RegisterAddonMessagePrefix
+		prefixOk = register(PREFIX)
+		-- Fehlt von einem Mitglied noch jede Nachricht (z.B. weil beide gleichzeitig
+		-- neu geladen haben), fragen wir regelmaessig nach.
+		C_Timer.NewTicker(10, function()
+			local channel = GroupChannel()
+			if not channel then return end
+			for _, name in ipairs(GroupNames()) do
+				if not members[name] and name ~= "Testmate" then
+					Send("R|", channel)
+					return
+				end
+			end
+		end)
+		ui = CreateUI()
+		QueueScan(true)
+	else -- Zonenwechsel, Betreten der Welt
+		QueueScan(true)
+	end
+end)
+
+for _, e in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "QUEST_LOG_UPDATE",
+	"GROUP_ROSTER_UPDATE", "CHAT_MSG_ADDON" }) do
+	frame:RegisterEvent(e)
+end
+pcall(frame.RegisterEvent, frame, "QUEST_DATA_LOAD_RESULT") -- nicht in jedem Client vorhanden
+
+SLASH_SEXYQUESTHELPER1 = "/sqh"
+SLASH_SEXYQUESTHELPER2 = "/sexyquesthelper"
+SlashCmdList["SEXYQUESTHELPER"] = function(arg)
+	if not ui then return end
+	arg = (arg or ""):lower()
+	if arg == "test" then
+		testMode = not testMode
+		if testMode then
+			-- Fake-Mitglied: gleiche Zone, eine deiner Quests fehlt, dafuer eine fremde
+			local ids = {}
+			local skipped = false
+			for _, id in ipairs(SortedIds(myIds)) do
+				if skipped then ids[id] = true else skipped = true end
+			end
+			ids[999999] = true
+			members.Testmate = { zone = myZone, ids = ids }
+		else
+			members.Testmate = nil
+		end
+		forceShow = testMode
+		Refresh()
+		return
+	end
+	if arg == "debug" then
+		print("SexyQuestHelper debug:")
+		print(("  Zone: '%s' | Quests in Zone: %d | Eintraege im Log: %d"):format(myZone, #SortedIds(myIds), NumEntries()))
+		print(("  Prefix registriert: %s | gesendet: %d (Ergebnis: %s) | empfangen: %d (zuletzt von: %s) | Addon-Nachrichten gesamt: %d"):format(
+			tostring(prefixOk), sendCount, tostring(lastSendResult), recvCount, lastRecv, anyAddonMsgs))
+		print(("  API: C_QuestLog.GetInfo=%s, GetQuestLogTitle=%s, Gruppenkanal=%s"):format(
+			tostring(C_QuestLog and C_QuestLog.GetInfo ~= nil), tostring(GetQuestLogTitle ~= nil), tostring(GroupChannel())))
+		for i = 1, NumEntries() do
+			local title, isHeader, _, questID = GetEntry(i)
+			if isHeader then print("  Kategorie: '" .. tostring(title) .. "'")
+			else print(("    %s (%s)"):format(tostring(title), tostring(questID))) end
+		end
+		for name, m in pairs(members) do
+			print(("  Mitglied %s: Zone '%s', %d Quests"):format(name, m.zone, #SortedIds(m.ids)))
+		end
+		return
+	end
+	if arg == "refresh" or arg == "scan" then
+		QueueScan(true)
+		return
+	end
+	if ui:IsShown() then
+		forceShow = false
+		dismissedSig = ui.sig
+	else
+		forceShow = true
+	end
+	Refresh()
+end
