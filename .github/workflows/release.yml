@@ -1,0 +1,29 @@
+name: Package and release
+
+# Läuft, wenn ein Tag gepusht wird (z. B. v1.0.1). Der BigWigs-Packager baut das
+# Zip anhand von .pkgmeta und lädt es zu CurseForge hoch (Projekt-ID steht in der
+# .toc als X-Curse-Project-ID). Zusätzlich entsteht ein GitHub-Release.
+#
+# Benötigt das Repo-Secret CF_API_KEY (CurseForge API-Token).
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Package and upload
+        uses: BigWigsMods/packager@v2
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
