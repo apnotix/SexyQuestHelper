@@ -1,0 +1,10 @@
+package-as: SexyQuestHelper
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
+ignore:
+  - .github
+  - curseforge
+  - README.md
