@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3
+- Addon users now broadcast their addon version; it is shown next to each group member (members on older versions are marked "old version")
+- The window title shows your own version
+
 ## 1.0.2
 - Fix: sender names on WoW Forever use "Name Realm" (space instead of dash), so group members were never matched
 - `/sqh debug` now prints a compact 3-line summary (`/sqh debug log` lists the quest log)

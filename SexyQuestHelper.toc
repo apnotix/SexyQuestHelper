@@ -1,5 +1,5 @@
 ## Interface: 120100, 16001
-## Version: 1.0.2
+## Version: 1.0.3
 ## Title: SexyQuestHelper
 ## Author: apnotix
 ## Notes: Shows whether all group members running this addon have the same quests in the current zone

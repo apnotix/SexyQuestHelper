@@ -6,6 +6,8 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
+local VERSION = "1.0.3" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local versions = {} -- [name] = Addon-Version des Mitglieds
 local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
 local IGNORE_AFTER_SCAN = 2 -- Sekunden, in denen eigene Auf-/Zuklapp-Events ignoriert werden
 local CHUNK_SIZE = 200      -- Zeichen Quest-IDs pro Nachricht (Limit: 255 inkl. Header)
@@ -147,6 +149,8 @@ local function Broadcast()
 	end
 	-- Auch eine leere Liste senden, damit andere "keine Quests" von "kein Addon" unterscheiden.
 	if first or chunk ~= "" then flush() end
+	-- Version separat senden: aeltere Clients ignorieren unbekannte Nachrichtentypen.
+	Send("V|" .. VERSION, channel)
 end
 
 local function OnAddonMessage(prefix, msg, _, sender)
@@ -172,6 +176,10 @@ local function OnAddonMessage(prefix, msg, _, sender)
 			lastReply = GetTime()
 			Broadcast()
 		end
+		return
+	elseif kind == "V" then
+		versions[name] = rest
+		Refresh()
 		return
 	else
 		return
@@ -234,6 +242,13 @@ local function OpenQuest(id)
 	end
 end
 
+-- Versions-Anhang fuer eine Zeile ("" wenn keine Daten vom Mitglied vorliegen)
+local function VersionTag(name)
+	if not members[name] then return "" end
+	local v = versions[name]
+	return v and (" |cff888888v" .. v .. "|r") or (" |cff888888(" .. T("alte Version", "old version") .. ")|r")
+end
+
 local function GroupNames()
 	local names = {}
 	local me = UnitName("player")
@@ -249,7 +264,7 @@ end
 
 -- Liefert Zeilen { text, questID }, ob es Quest-Unterschiede gibt und deren Signatur.
 local function BuildRows()
-	local rows, sigParts, hasDiff = {}, {}, false
+	local rows, sameRows, sigParts, hasDiff = {}, {}, {}, false
 	local inGroup = GroupChannel() or testMode
 
 	if inGroup then
@@ -258,7 +273,7 @@ local function BuildRows()
 			if not m then
 				rows[#rows + 1] = { ("|cff888888%s: %s|r"):format(name, T("kein Addon / keine Daten", "no addon / no data")) }
 			elseif m.zone ~= myZone then
-				rows[#rows + 1] = { ("|cff888888%s: %s (%s)|r"):format(name, T("anderes Gebiet", "different zone"), m.zone) }
+				rows[#rows + 1] = { ("|cff888888%s: %s (%s)|r%s"):format(name, T("anderes Gebiet", "different zone"), m.zone, VersionTag(name)) }
 			else
 				local iLack, theyLack = {}, {}
 				for id in pairs(m.ids) do
@@ -269,10 +284,12 @@ local function BuildRows()
 				end
 				table.sort(iLack); table.sort(theyLack)
 
-				if #iLack + #theyLack > 0 then
+				if #iLack + #theyLack == 0 then
+					sameRows[#sameRows + 1] = { ("|cff00ff00%s|r%s"):format(name, VersionTag(name)) }
+				else
 					hasDiff = true
 					sigParts[#sigParts + 1] = name .. ":" .. table.concat(iLack, ",") .. "/" .. table.concat(theyLack, ",")
-					rows[#rows + 1] = { ("|cffffd100%s|r"):format(name) }
+					rows[#rows + 1] = { ("|cffffd100%s|r%s"):format(name, VersionTag(name)) }
 					for _, id in ipairs(iLack) do
 						rows[#rows + 1] = { ("  |cffff6060%s|r %s"):format(T("Dir fehlt:", "You lack:"), QuestName(id)), id }
 					end
@@ -288,6 +305,7 @@ local function BuildRows()
 		local msg = inGroup and T("Alle haben die gleichen Quests", "Everyone has the same quests")
 			or T("Nicht in einer Gruppe.", "Not in a group.")
 		table.insert(rows, 1, { "|cff00ff00" .. msg .. "|r" })
+		for i, r in ipairs(sameRows) do table.insert(rows, 1 + i, r) end
 	end
 	return rows, hasDiff, table.concat(sigParts, ";")
 end
@@ -384,7 +402,7 @@ function Refresh()
 		return
 	end
 
-	ui.title:SetText(("SexyQuestHelper |cffaaaaaa- %s|r"):format(myZone ~= "" and myZone or "?"))
+	ui.title:SetText(("SexyQuestHelper |cffaaaaaav%s - %s|r"):format(VERSION, myZone ~= "" and myZone or "?"))
 	for i, data in ipairs(rows) do
 		local row = GetRow(i)
 		row.questId = data[2]
@@ -431,7 +449,7 @@ local function PruneMembers()
 	local present = {}
 	for _, name in ipairs(GroupNames()) do present[name] = true end
 	for name in pairs(members) do
-		if not present[name] then members[name] = nil end
+		if not present[name] then members[name] = nil; versions[name] = nil end
 	end
 end
 
@@ -495,6 +513,7 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 			end
 			ids[999999] = true
 			members.Testmate = { zone = myZone, ids = ids }
+			versions.Testmate = VERSION
 		else
 			members.Testmate = nil
 		end
@@ -504,9 +523,9 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 	end
 	if arg == "debug" or arg == "debug log" then
 		local keys = {}
-		for name, m in pairs(members) do keys[#keys + 1] = ("%s(%d)"):format(name, #SortedIds(m.ids)) end
+		for name, m in pairs(members) do keys[#keys + 1] = ("%s(%d, v%s)"):format(name, #SortedIds(m.ids), tostring(versions[name] or "?")) end
 		print(("SQH v%s | Kanal=%s | Prefix=%s | gesendet=%d (%s) | empfangen=%d | Addon-Msgs gesamt=%d | letzter Sender=%s"):format(
-			tostring((C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata or function() end)("SexyQuestHelper", "Version") or "?"), tostring(GroupChannel()),
+			VERSION, tostring(GroupChannel()),
 			tostring(prefixOk), sendCount, tostring(lastSendResult), recvCount, anyAddonMsgs, lastRecv))
 		print(("SQH Zone='%s' | Quests=%d | Log-Eintraege=%d | GetInfo=%s | GetQuestLogTitle=%s"):format(
 			myZone, #SortedIds(myIds), NumEntries(), tostring(C_QuestLog and C_QuestLog.GetInfo ~= nil), tostring(GetQuestLogTitle ~= nil)))
