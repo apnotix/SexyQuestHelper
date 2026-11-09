@@ -153,7 +153,8 @@ local function OnAddonMessage(prefix, msg, _, sender)
 	anyAddonMsgs = anyAddonMsgs + 1
 	if prefix ~= PREFIX then return end
 	-- Realm-Suffix ("Name-Realm", auf Forever teils mit abgekuerztem/doppeltem Realm) abschneiden
-	local name = tostring(sender):match("^([^-]+)") or tostring(sender)
+	-- Forever liefert "Name Realm" (Leerzeichen), Retail "Name-Realm"
+	local name = tostring(sender):match("^([^%s%-]+)") or tostring(sender)
 	if name == UnitName("player") then return end
 	recvCount, lastRecv = recvCount + 1, tostring(sender)
 
@@ -501,20 +502,20 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 		Refresh()
 		return
 	end
-	if arg == "debug" then
-		print("SexyQuestHelper debug:")
-		print(("  Zone: '%s' | Quests in Zone: %d | Eintraege im Log: %d"):format(myZone, #SortedIds(myIds), NumEntries()))
-		print(("  Prefix registriert: %s | gesendet: %d (Ergebnis: %s) | empfangen: %d (zuletzt von: %s) | Addon-Nachrichten gesamt: %d"):format(
-			tostring(prefixOk), sendCount, tostring(lastSendResult), recvCount, lastRecv, anyAddonMsgs))
-		print(("  API: C_QuestLog.GetInfo=%s, GetQuestLogTitle=%s, Gruppenkanal=%s"):format(
-			tostring(C_QuestLog and C_QuestLog.GetInfo ~= nil), tostring(GetQuestLogTitle ~= nil), tostring(GroupChannel())))
-		for i = 1, NumEntries() do
-			local title, isHeader, _, questID = GetEntry(i)
-			if isHeader then print("  Kategorie: '" .. tostring(title) .. "'")
-			else print(("    %s (%s)"):format(tostring(title), tostring(questID))) end
-		end
-		for name, m in pairs(members) do
-			print(("  Mitglied %s: Zone '%s', %d Quests"):format(name, m.zone, #SortedIds(m.ids)))
+	if arg == "debug" or arg == "debug log" then
+		local keys = {}
+		for name, m in pairs(members) do keys[#keys + 1] = ("%s(%d)"):format(name, #SortedIds(m.ids)) end
+		print(("SQH v%s | Kanal=%s | Prefix=%s | gesendet=%d (%s) | empfangen=%d | Addon-Msgs gesamt=%d | letzter Sender=%s"):format(
+			tostring((C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata or function() end)("SexyQuestHelper", "Version") or "?"), tostring(GroupChannel()),
+			tostring(prefixOk), sendCount, tostring(lastSendResult), recvCount, anyAddonMsgs, lastRecv))
+		print(("SQH Zone='%s' | Quests=%d | Log-Eintraege=%d | GetInfo=%s | GetQuestLogTitle=%s"):format(
+			myZone, #SortedIds(myIds), NumEntries(), tostring(C_QuestLog and C_QuestLog.GetInfo ~= nil), tostring(GetQuestLogTitle ~= nil)))
+		print("SQH Gruppe: " .. table.concat(GroupNames(), ", ") .. " | Daten von: " .. table.concat(keys, ", "))
+		if arg == "debug log" then
+			for i = 1, NumEntries() do
+				local title, isHeader, _, questID = GetEntry(i)
+				print((isHeader and "  [%s]" or "    %s (%s)"):format(tostring(title), tostring(questID)))
+			end
 		end
 		return
 	end

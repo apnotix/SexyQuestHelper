@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+- Fix: sender names on WoW Forever use "Name Realm" (space instead of dash), so group members were never matched
+- `/sqh debug` now prints a compact 3-line summary (`/sqh debug log` lists the quest log)
+
 ## 1.0.1
 - Fix: group channel detection (addon messages were sent to INSTANCE_CHAT and never arrived, so everyone showed as "no addon")
 - Request/reply sync so members who reload at the same time still find each other
