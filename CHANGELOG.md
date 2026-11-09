@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.4
+- Fix: zones are now compared by map ID instead of the (localized) zone name, so players with different client languages match
+
 ## 1.0.3
 - Addon users now broadcast their addon version; it is shown next to each group member (members on older versions are marked "old version")
 - The window title shows your own version

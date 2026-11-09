@@ -6,7 +6,7 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.3" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.4" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
 local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
 local IGNORE_AFTER_SCAN = 2 -- Sekunden, in denen eigene Auf-/Zuklapp-Events ignoriert werden
@@ -17,7 +17,7 @@ local function T(de, en) return isDE and de or en end
 
 local frame = CreateFrame("Frame")
 local ui                      -- Anzeigefenster (lazy)
-local myZone, myIds, myTitles = "", {}, {}
+local myZone, myZoneKey, myIds, myTitles = "", "", {}, {} -- myZone: lokaler Name, myZoneKey: sprachunabhaengiger Vergleichsschluessel
 local mySignature = ""
 local members = {}            -- [name] = { zone = "", ids = { [id] = true } }
 local scanTimer, ignoreUntil = nil, 0
@@ -62,10 +62,45 @@ local function CurrentZone()
 	return (GetRealZoneText and GetRealZoneText()) or (GetZoneText and GetZoneText()) or ""
 end
 
+-- Zonennamen sind je Client-Sprache uebersetzt und taugen nicht zum Vergleich
+-- zwischen Spielern. Stattdessen wird die UiMapID der Zone gesendet (bei
+-- Mikro-/Dungeonkarten die uebergeordnete Zonenkarte). Ohne C_Map: Name.
+local ZONE_MAPTYPE = (Enum and Enum.UIMapType and Enum.UIMapType.Zone) or 3
+
+local function ZoneKey()
+	if C_Map and C_Map.GetBestMapForUnit then
+		local id = C_Map.GetBestMapForUnit("player")
+		if id then
+			for _ = 1, 10 do
+				local info = C_Map.GetMapInfo(id)
+				if info and info.mapType and info.mapType > ZONE_MAPTYPE and info.parentMapID and info.parentMapID > 0 then
+					id = info.parentMapID
+				else
+					break
+				end
+			end
+			return "m" .. id
+		end
+	end
+	return "n:" .. CurrentZone()
+end
+
+-- Lesbarer Name zu einem Schluessel, in der Sprache des eigenen Clients.
+local function ZoneLabel(key)
+	local id = key:match("^m(%d+)$")
+	if id and C_Map and C_Map.GetMapInfo then
+		local info = C_Map.GetMapInfo(tonumber(id))
+		if info and info.name then return info.name end
+	end
+	return (key:gsub("^n:", ""))
+end
+
 -- Klappt zugeklappte Kategorien kurz auf (sonst fehlen deren Quests in der
 -- Liste), liest die Quests der aktuellen Zone und klappt wieder zu.
 local function ScanQuests()
 	local zone = CurrentZone()
+	local key = ZoneKey()
+	local mapName = ZoneLabel(key)
 	local ids, titles = {}, {}
 
 	local reopened = {}
@@ -81,7 +116,7 @@ local function ScanQuests()
 	for i = 1, NumEntries() do
 		local title, isHeader, _, questID = GetEntry(i)
 		if isHeader then
-			inZone = (title == zone)
+			inZone = (title == zone or title == mapName)
 		elseif inZone and questID and questID > 0 then
 			ids[questID] = true
 			titles[questID] = title
@@ -95,7 +130,7 @@ local function ScanQuests()
 		end
 	end
 
-	return zone, ids, titles
+	return zone, ids, titles, key
 end
 
 local function SortedIds(ids)
@@ -132,7 +167,7 @@ local function Broadcast()
 	local channel = GroupChannel()
 	if not channel then return end
 
-	local zone = myZone:gsub("|", "")
+	local zone = myZoneKey:gsub("|", "")
 	local list = SortedIds(myIds)
 	local first = true
 	local chunk = ""
@@ -272,8 +307,8 @@ local function BuildRows()
 			local m = members[name]
 			if not m then
 				rows[#rows + 1] = { ("|cff888888%s: %s|r"):format(name, T("kein Addon / keine Daten", "no addon / no data")) }
-			elseif m.zone ~= myZone then
-				rows[#rows + 1] = { ("|cff888888%s: %s (%s)|r%s"):format(name, T("anderes Gebiet", "different zone"), m.zone, VersionTag(name)) }
+			elseif m.zone ~= myZoneKey then
+				rows[#rows + 1] = { ("|cff888888%s: %s (%s)|r%s"):format(name, T("anderes Gebiet", "different zone"), ZoneLabel(m.zone), VersionTag(name)) }
 			else
 				local iLack, theyLack = {}, {}
 				for id in pairs(m.ids) do
@@ -422,15 +457,15 @@ end
 
 local function DoScan(forceBroadcast)
 	scanTimer = nil
-	local ok, zone, ids, titles = pcall(ScanQuests)
+	local ok, zone, ids, titles, key = pcall(ScanQuests)
 	if not ok then
 		print("|cffff4040SexyQuestHelper:|r Scan-Fehler: " .. tostring(zone))
 		return
 	end
-	myZone, myIds, myTitles = zone, ids, titles
+	myZone, myIds, myTitles, myZoneKey = zone, ids, titles, key
 	ignoreUntil = GetTime() + IGNORE_AFTER_SCAN
 
-	local signature = myZone .. ":" .. table.concat(SortedIds(myIds), ",")
+	local signature = myZoneKey .. ":" .. table.concat(SortedIds(myIds), ",")
 	if forceBroadcast or signature ~= mySignature then
 		mySignature = signature
 		Broadcast()
@@ -512,7 +547,7 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 				if skipped then ids[id] = true else skipped = true end
 			end
 			ids[999999] = true
-			members.Testmate = { zone = myZone, ids = ids }
+			members.Testmate = { zone = myZoneKey, ids = ids }
 			versions.Testmate = VERSION
 		else
 			members.Testmate = nil
@@ -527,8 +562,8 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 		print(("SQH v%s | Kanal=%s | Prefix=%s | gesendet=%d (%s) | empfangen=%d | Addon-Msgs gesamt=%d | letzter Sender=%s"):format(
 			VERSION, tostring(GroupChannel()),
 			tostring(prefixOk), sendCount, tostring(lastSendResult), recvCount, anyAddonMsgs, lastRecv))
-		print(("SQH Zone='%s' | Quests=%d | Log-Eintraege=%d | GetInfo=%s | GetQuestLogTitle=%s"):format(
-			myZone, #SortedIds(myIds), NumEntries(), tostring(C_QuestLog and C_QuestLog.GetInfo ~= nil), tostring(GetQuestLogTitle ~= nil)))
+		print(("SQH Zone='%s' (%s) | Quests=%d | Log-Eintraege=%d | GetInfo=%s | GetQuestLogTitle=%s"):format(
+			myZone, myZoneKey, #SortedIds(myIds), NumEntries(), tostring(C_QuestLog and C_QuestLog.GetInfo ~= nil), tostring(GetQuestLogTitle ~= nil)))
 		print("SQH Gruppe: " .. table.concat(GroupNames(), ", ") .. " | Daten von: " .. table.concat(keys, ", "))
 		if arg == "debug log" then
 			for i = 1, NumEntries() do
