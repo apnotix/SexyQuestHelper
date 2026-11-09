@@ -107,10 +107,16 @@ end
 -- Kommunikation
 ---------------------------------------------------------------------------
 
+-- Gleiche Logik wie SexyInterrupter: INSTANCE_CHAT nur bei Dungeonfinder-/
+-- Schlachtfeldgruppen. IsInGroup(LE_PARTY_CATEGORY_INSTANCE) darf hier NICHT
+-- benutzt werden: ist die Konstante auf dem Client nil, zaehlt der Aufruf wie
+-- IsInGroup() und es ginge faelschlich immer an INSTANCE_CHAT (kommt nie an).
 local function GroupChannel()
-	if IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then return "INSTANCE_CHAT" end
+	if not IsInGroup() and not IsInRaid() then return nil end
+	local _, instanceType = IsInInstance()
+	if instanceType == "pvp" or (IsPartyLFG and IsPartyLFG()) then return "INSTANCE_CHAT" end
 	if IsInRaid() then return "RAID" end
-	if IsInGroup() then return "PARTY" end
+	return "PARTY"
 end
 
 local sendCount, lastSendResult = 0, nil
@@ -397,7 +403,12 @@ end
 
 local function DoScan(forceBroadcast)
 	scanTimer = nil
-	myZone, myIds, myTitles = ScanQuests()
+	local ok, zone, ids, titles = pcall(ScanQuests)
+	if not ok then
+		print("|cffff4040SexyQuestHelper:|r Scan-Fehler: " .. tostring(zone))
+		return
+	end
+	myZone, myIds, myTitles = zone, ids, titles
 	ignoreUntil = GetTime() + IGNORE_AFTER_SCAN
 
 	local signature = myZone .. ":" .. table.concat(SortedIds(myIds), ",")
@@ -436,8 +447,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		Refresh()
 	elseif event == "PLAYER_LOGIN" then
 		SexyQuestHelperDB = SexyQuestHelperDB or {}
+		ui = CreateUI() -- zuerst, damit /sqh auch bei spaeteren Fehlern funktioniert
 		local register = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or RegisterAddonMessagePrefix
-		prefixOk = register(PREFIX)
+		local regOk, regResult = pcall(register, PREFIX)
+		prefixOk = regOk and tostring(regResult) or ("FEHLER: " .. tostring(regResult))
 		-- Fehlt von einem Mitglied noch jede Nachricht (z.B. weil beide gleichzeitig
 		-- neu geladen haben), fragen wir regelmaessig nach.
 		C_Timer.NewTicker(10, function()
@@ -450,7 +463,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
 				end
 			end
 		end)
-		ui = CreateUI()
 		QueueScan(true)
 	else -- Zonenwechsel, Betreten der Welt
 		QueueScan(true)
@@ -466,7 +478,10 @@ pcall(frame.RegisterEvent, frame, "QUEST_DATA_LOAD_RESULT") -- nicht in jedem Cl
 SLASH_SEXYQUESTHELPER1 = "/sqh"
 SLASH_SEXYQUESTHELPER2 = "/sexyquesthelper"
 SlashCmdList["SEXYQUESTHELPER"] = function(arg)
-	if not ui then return end
+	if not ui then
+		print("SexyQuestHelper: Oberflaeche nicht initialisiert (Fehler beim Laden?)")
+		return
+	end
 	arg = (arg or ""):lower()
 	if arg == "test" then
 		testMode = not testMode

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+- Fix: group channel detection (addon messages were sent to INSTANCE_CHAT and never arrived, so everyone showed as "no addon")
+- Request/reply sync so members who reload at the same time still find each other
+- Startup errors and scan errors are now reported; `/sqh debug` shows message counters
+
 ## 1.0.0
 - Initial release
 - Compares the quests of your current zone with all group members running the addon
