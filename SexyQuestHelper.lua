@@ -491,10 +491,6 @@ local function CompareVersions(x, y)
 	return 0
 end
 
-	local v = versions[name]
-	return v and (" |cff888888v" .. v .. "|r") or (" |cff888888(" .. T("alte Version", "old version") .. ")|r")
-end
-
 local unitByName = {}
 
 local function GroupNames()
