@@ -344,7 +344,12 @@ end
 -- Spielername in Klassenfarbe (weiss, wenn die Klasse unbekannt ist)
 local function ColoredName(name)
 	local unit = unitByName[name]
-	local _, class = unit and UnitClass(unit)
+	local class
+	if unit then
+		-- nicht "unit and UnitClass(unit)": "and" schneidet auf EINEN Rueckgabewert ab
+		local _, classFile = UnitClass(unit)
+		class = classFile
+	end
 	local c = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
 	if not c then return "|cffffffff" .. name .. "|r" end
 	return ("|cff%02x%02x%02x%s|r"):format(c.r * 255, c.g * 255, c.b * 255, name)
