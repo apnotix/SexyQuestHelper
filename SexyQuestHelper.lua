@@ -511,17 +511,39 @@ local function GroupNames()
 end
 
 -- Klassenfarbe eines Mitglieds (weiss, wenn die Klasse unbekannt ist)
-local function ClassColor(name)
+local function ClassFile(name)
 	local unit = unitByName[name]
-	local class
-	if unit then
-		-- nicht "unit and UnitClass(unit)": "and" schneidet auf EINEN Rueckgabewert ab
-		local _, classFile = UnitClass(unit)
-		class = classFile
-	end
+	if not unit then return nil end
+	-- nicht "unit and UnitClass(unit)": "and" schneidet auf EINEN Rueckgabewert ab
+	local _, classFile = UnitClass(unit)
+	return classFile
+end
+
+local function ClassColor(name)
+	local class = ClassFile(name)
 	local c = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
 	if c then return c.r, c.g, c.b end
 	return 1, 1, 1
+end
+
+-- Setzt ein Klassenicon auf die Textur; ohne Icon-Daten eine Flaeche in Klassenfarbe.
+local function SetClassIcon(tex, name)
+	local class = ClassFile(name)
+	local coords = class and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[class]
+	if coords then
+		tex:SetTexture("Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES")
+		tex:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+		return
+	end
+	local atlas = class and ("classicon-" .. class:lower())
+	if atlas and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(atlas) then
+		tex:SetAtlas(atlas)
+		tex:SetTexCoord(0, 1, 0, 1)
+		return
+	end
+	local r, g, b = ClassColor(name)
+	tex:SetColorTexture(r, g, b, 1)
+	tex:SetTexCoord(0, 1, 0, 1)
 end
 
 -- Spielername als Text in Klassenfarbe
@@ -647,13 +669,10 @@ local function GetRow(i)
 	row.hl:SetAllPoints()
 	row.hl:SetColorTexture(1, 1, 1, 0.08)
 
-	-- Kopfzeile eines Spielers: Avatar (Klassenfarbe), Name, Status
+	-- Kopfzeile eines Spielers: Klassenicon, Name (Klassenfarbe), Status
 	row.avatar = row:CreateTexture(nil, "ARTWORK")
-	row.avatar:SetSize(18, 18)
+	row.avatar:SetSize(20, 20)
 	row.avatar:SetPoint("LEFT", row, "LEFT", 8, 0)
-	row.avatarText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	row.avatarText:SetPoint("CENTER", row.avatar, "CENTER", 0, 0)
-	row.avatarText:SetTextColor(0.05, 0.08, 0.08)
 	row.status = MakePill(row)
 	row.status.tex:SetPoint("RIGHT", row, "RIGHT", -8, 0)
 	row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -716,12 +735,10 @@ local function ConfigureRow(row, e)
 	row.divider:SetShown(isQuest)
 
 	row.avatar:SetShown(isHeader)
-	row.avatarText:SetShown(isHeader)
 	row.name:SetShown(isHeader)
 	if isHeader then
 		local r, g, b = ClassColor(e.name)
-		row.avatar:SetColorTexture(r, g, b, 1)
-		row.avatarText:SetText(e.name:match("[%z\1-\127\194-\244][\128-\191]*") or "?")
+		SetClassIcon(row.avatar, e.name)
 		row.name:SetText(e.name)
 		row.name:SetTextColor(r, g, b)
 		SetPill(row.status, e.tone, e.status, nil, 18)
