@@ -6,7 +6,7 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.8" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.9" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
 local completedBy = {} -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied schon abgeschlossen hat
 local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
@@ -411,17 +411,19 @@ end
 
 -- Liefert Zeilen { text, questID, teilbar }, ob es Quest-Unterschiede gibt und deren Signatur.
 local function BuildRows()
-	local rows, sameRows, sigParts, hasDiff = {}, {}, {}, false
+	local rows, sameRows, sigParts, hasDiff, withAddon = {}, {}, {}, false, 0
 	local inGroup = GroupChannel() or testMode
 
 	if inGroup then
 		for _, name in ipairs(GroupNames()) do
 			local m = members[name]
 			if not m then
-				rows[#rows + 1] = { ("%s|cff888888: %s|r"):format(ColoredName(name), T("kein Addon / keine Daten", "no addon / no data")) }
+				-- Mitglieder ohne Addon werden nicht angezeigt (siehe /sqh version)
 			elseif m.zone ~= myZoneKey then
+				withAddon = withAddon + 1
 				rows[#rows + 1] = { ("%s|cff888888: %s (%s)|r"):format(ColoredName(name), T("anderes Gebiet", "different zone"), ZoneLabel(m.zone)) }
 			else
+				withAddon = withAddon + 1
 				local iLack, theyLack = {}, {}
 				local theirDone = completedBy[name]
 				for id in pairs(m.ids) do
@@ -452,9 +454,15 @@ local function BuildRows()
 	end
 
 	if not hasDiff then
-		local msg = inGroup and T("Alle haben die gleichen Quests", "Everyone has the same quests")
-			or T("Nicht in einer Gruppe.", "Not in a group.")
-		table.insert(rows, 1, { "|cff00ff00" .. msg .. "|r" })
+		local msg, color
+		if not inGroup then
+			msg, color = T("Nicht in einer Gruppe.", "Not in a group."), "ff888888"
+		elseif withAddon == 0 then
+			msg, color = T("Kein Gruppenmitglied mit Addon.", "No group member has the addon."), "ff888888"
+		else
+			msg, color = T("Alle haben die gleichen Quests", "Everyone has the same quests"), "ff00ff00"
+		end
+		table.insert(rows, 1, { "|c" .. color .. msg .. "|r" })
 		for i, r in ipairs(sameRows) do table.insert(rows, 1 + i, r) end
 	end
 	return rows, hasDiff, table.concat(sigParts, ";")

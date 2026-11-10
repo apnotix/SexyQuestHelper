@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.9
+- Group members without the addon are no longer listed in the window (`/sqh version` still shows them)
+
 ## 1.0.8
 - Versions are no longer shown in the window; new command `/sqh version` lists the addon version of every group member and whether they are up to date
 
