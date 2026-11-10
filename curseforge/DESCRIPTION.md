@@ -29,6 +29,7 @@ Every player running the addon sends the quest IDs of the current zone to the gr
 | `/sqh refresh` | Re-scan your quest log and re-send it to the group |
 | `/sqh test` | Toggle a simulated group member to preview the display |
 | `/sqh version` | Show the addon version of every group member and whether they are up to date |
+| `/sqh check <questID>` | Show whether you can accept a quest and its prerequisite data (needs the QuestieDB addon) |
 | `/sqh debug` | Print diagnostics (detected zone, quests, addon message counters) |
 
 ## Notes

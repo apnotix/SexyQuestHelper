@@ -6,7 +6,7 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.10" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.11" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
 local blockedBy = {}      -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied laut seiner Meldung nicht annehmen kann
 local learnedBlocked = {} -- wie blockedBy, aber aus Fehlermeldungen beim Teilen gelernt
@@ -67,20 +67,75 @@ local function IsDone(id)
 	return fn and fn(id) and true or false
 end
 
+local function IsActive(id)
+	if C_QuestLog and C_QuestLog.IsOnQuest then return C_QuestLog.IsOnQuest(id) and true or false end
+	return GetQuestLogIndexByID and (GetQuestLogIndexByID(id) or 0) > 0 or false
+end
+
+-- Liest ein QuestieDB-Feld; Listenfelder liefern eine Liste oder nil, Zahlenfelder 0.
+local function DbField(id, key)
+	local ok, value = pcall(_G.QuestDB.Get, id, key)
+	return ok and value or nil
+end
+
+local function AnyDone(list)
+	for _, q in ipairs(list) do if IsDone(q) then return true end end
+	return false
+end
+
+-- Pruefung ueber die Daten des Addons QuestieDB (optional): Vorquests, ausschliessende
+-- Quests, Folgequest bereits erreicht, Mindeststufe. Nil = unbekannt.
+local function CanAcceptByQuestieDB(id)
+	local db = _G.QuestDB
+	if not (db and db.Get and db.Exists) then return nil end
+	local ok, exists = pcall(db.Exists, id)
+	if not (ok and exists) then return nil end
+
+	local single, group = DbField(id, "preQuestSingle"), DbField(id, "preQuestGroup")
+	if type(single) == "table" and #single > 0 then
+		if not AnyDone(single) then return false end -- keine der Alternativ-Vorquests erledigt
+	elseif type(group) == "table" then
+		for _, q in ipairs(group) do
+			if not IsDone(q) then return false end -- alle Gruppen-Vorquests noetig
+		end
+	end
+
+	local exclusive = DbField(id, "exclusiveTo")
+	if type(exclusive) == "table" then
+		for _, q in ipairs(exclusive) do
+			if IsDone(q) or IsActive(q) then return false end
+		end
+	end
+
+	local nextInChain = DbField(id, "nextQuestInChain")
+	if type(nextInChain) == "number" and nextInChain > 0 and (IsDone(nextInChain) or IsActive(nextInChain)) then
+		return false -- schon weiter in der Questkette
+	end
+
+	local minLevel = DbField(id, "requiredLevel")
+	if type(minLevel) == "number" and minLevel > 0 and UnitLevel("player") < minLevel then return false end
+	return true
+end
+
 -- Kann ICH diese Quest annehmen (Vorquest erfuellt, Stufe, ...)? Dafuer gibt es
--- keine Blizzard-API; wir fragen die Questie-Datenbank, falls vorhanden.
--- Ohne Questie ist die Antwort immer "ja" (unbekannt).
+-- keine Blizzard-API. Reihenfolge: QuestieDB-Daten, sonst Questie (IsDoable), sonst
+-- "ja" (unbekannt; dann lernen wir aus der Fehlermeldung beim Teilen).
 local acceptCache = {}
 local function CanAccept(id)
 	local c = acceptCache[id]
 	if c and GetTime() - c.t < 30 then return c.value end
 	local value = true
-	local loader = _G.QuestieLoader
-	if loader and loader.ImportModule then
-		local ok, db = pcall(loader.ImportModule, loader, "QuestieDB")
-		if ok and db and db.IsDoable then
-			local ok2, doable = pcall(db.IsDoable, id)
-			if ok2 and doable == false then value = false end
+	local byDb = CanAcceptByQuestieDB(id)
+	if byDb ~= nil then
+		value = byDb
+	else
+		local loader = _G.QuestieLoader
+		if loader and loader.ImportModule then
+			local ok, qdb = pcall(loader.ImportModule, loader, "QuestieDB")
+			if ok and qdb and qdb.IsDoable then
+				local ok2, doable = pcall(qdb.IsDoable, id)
+				if ok2 and doable == false then value = false end
+			end
 		end
 	end
 	acceptCache[id] = { value = value, t = GetTime() }
@@ -833,6 +888,19 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 				status = "|cff00ff00v" .. v .. " - " .. T("aktuell", "up to date") .. "|r"
 			end
 			print("  " .. ColoredName(name) .. ": " .. status)
+		end
+		return
+	end
+	local checkId = arg:match("^check%s+(%d+)$")
+	if checkId then
+		local id = tonumber(checkId)
+		local function list(v) return type(v) == "table" and table.concat(v, ",") or tostring(v) end
+		print(("SQH check %d: QuestDB=%s | annehmbar=%s | erledigt=%s | aktiv=%s"):format(id,
+			tostring(_G.QuestDB ~= nil), tostring(CanAccept(id)), tostring(IsDone(id)), tostring(IsActive(id))))
+		if _G.QuestDB then
+			print(("  preQuestSingle=%s preQuestGroup=%s exclusiveTo=%s nextQuestInChain=%s requiredLevel=%s"):format(
+				list(DbField(id, "preQuestSingle")), list(DbField(id, "preQuestGroup")), list(DbField(id, "exclusiveTo")),
+				tostring(DbField(id, "nextQuestInChain")), tostring(DbField(id, "requiredLevel"))))
 		end
 		return
 	end

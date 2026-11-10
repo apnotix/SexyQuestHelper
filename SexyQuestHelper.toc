@@ -1,5 +1,5 @@
 ## Interface: 120100, 16001
-## Version: 1.0.10
+## Version: 1.0.11
 ## Title: SexyQuestHelper
 ## Author: apnotix
 ## Notes: Shows whether all group members running this addon have the same quests in the current zone
@@ -8,6 +8,7 @@
 ## X-Curse-Project-ID: 1791780
 ## IconTexture: Interface\AddOns\SexyQuestHelper\icon.tga
 ## DefaultState: Enabled
+## OptionalDeps: QuestieDB
 ## SavedVariables: SexyQuestHelperDB
 
 SexyQuestHelper.lua
