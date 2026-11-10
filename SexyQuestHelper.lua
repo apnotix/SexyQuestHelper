@@ -806,9 +806,15 @@ local function CreateUI()
 	f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	f.title:SetPoint("TOPLEFT", 12, -9)
 	f.title:SetText("SexyQuestHelper")
+	-- Gebiet als Badge ganz rechts in der Titelleiste (links vom Schliessen-Kreuz)
+	f.zoneBg = f:CreateTexture(nil, "ARTWORK")
+	f.zoneBg:SetPoint("TOPRIGHT", f, "TOPRIGHT", -30, -7)
+	f.zoneBg:SetHeight(18)
+	f.zoneBg:SetColorTexture(0.165, 0.14, 0.10, 1)
 	f.zone = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	f.zone:SetPoint("LEFT", f.title, "RIGHT", 8, 0)
-	f.zone:SetTextColor(0.72, 0.68, 0.6)
+	f.zone:SetPoint("CENTER", f.zoneBg, "CENTER", 0, 0)
+	f.zone:SetTextColor(0.78, 0.73, 0.64)
+	f.zone:SetWordWrap(false)
 
 	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
 	close:SetPoint("TOPRIGHT", 2, 2)
@@ -847,6 +853,10 @@ function Refresh()
 	end
 
 	ui.zone:SetText(myZone ~= "" and myZone or "?")
+	ui.zone:SetWidth(0) -- Breite zuruecksetzen, dann natuerliche Breite messen
+	local zoneWidth = math.min(ui.zone:GetStringWidth(), 150)
+	ui.zone:SetWidth(zoneWidth)
+	ui.zoneBg:SetWidth(zoneWidth + 18)
 
 	local y = BAND_H + 8
 	for i, e in ipairs(entries) do
