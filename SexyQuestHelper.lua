@@ -6,7 +6,7 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.11" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.12" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
 local blockedBy = {}      -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied laut seiner Meldung nicht annehmen kann
 local learnedBlocked = {} -- wie blockedBy, aber aus Fehlermeldungen beim Teilen gelernt
@@ -362,7 +362,7 @@ end
 -- Anzeige
 ---------------------------------------------------------------------------
 
-local WIDTH, ROW_H = 330, 16
+local WIDTH = 376
 local pendingSig, pendingSince -- noch nicht angezeigter Unterschied und seit wann er besteht
 local forceShow = false     -- per /sqh erzwungen (auch ohne Unterschiede)
 local dismissedSig = nil    -- Unterschiede, die der Nutzer weggeklickt hat
@@ -510,8 +510,8 @@ local function GroupNames()
 	return names
 end
 
--- Spielername in Klassenfarbe (weiss, wenn die Klasse unbekannt ist)
-local function ColoredName(name)
+-- Klassenfarbe eines Mitglieds (weiss, wenn die Klasse unbekannt ist)
+local function ClassColor(name)
 	local unit = unitByName[name]
 	local class
 	if unit then
@@ -520,71 +520,112 @@ local function ColoredName(name)
 		class = classFile
 	end
 	local c = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
-	if not c then return "|cffffffff" .. name .. "|r" end
-	return ("|cff%02x%02x%02x%s|r"):format(c.r * 255, c.g * 255, c.b * 255, name)
+	if c then return c.r, c.g, c.b end
+	return 1, 1, 1
 end
 
--- Liefert Zeilen { text, questID, teilbar }, ob es Quest-Unterschiede gibt und deren Signatur.
-local function BuildRows()
-	local rows, sameRows, sigParts, hasDiff, withAddon = {}, {}, {}, false, 0
+-- Spielername als Text in Klassenfarbe
+local function ColoredName(name)
+	local r, g, b = ClassColor(name)
+	return ("|cff%02x%02x%02x%s|r"):format(r * 255, g * 255, b * 255, name)
+end
+
+-- Farben der Etiketten (Pillen) und Zeilenhoehen. Entwurf "A: Spielerkarten".
+local HEADER_H, QUEST_H, INFO_H, CARD_GAP, BAND_H = 30, 24, 20, 8, 30
+local TONES = {
+	ok = { bg = { 0.082, 0.188, 0.11 }, fg = { 0.48, 0.88, 0.56 } },
+	warn = { bg = { 0.227, 0.173, 0.063 }, fg = { 0.94, 0.75, 0.29 } },
+	grey = { bg = { 0.16, 0.145, 0.12 }, fg = { 0.66, 0.61, 0.54 } },
+	lack = { bg = { 0.231, 0.102, 0.09 }, fg = { 1, 0.6, 0.56 } },
+	they = { bg = { 0.078, 0.157, 0.227 }, fg = { 0.53, 0.8, 1 } },
+}
+
+local function CountText(n)
+	if n == 1 then return T("1 Unterschied", "1 difference") end
+	return n .. " " .. T("Unterschiede", "differences")
+end
+
+-- Liefert die Eintraege fuers Fenster, ob es Quest-Unterschiede gibt und deren Signatur.
+-- Eintrag: { kind = "header"|"quest"|"info", ... }. Automatisch geoeffnet (showAll = false)
+-- zeigt nur Spieler mit Unterschieden, manuell geoeffnet (showAll = true) alle Spieler.
+local function BuildEntries(showAll)
+	local entries, sigParts, hasDiff = {}, {}, false
 	local inGroup = GroupChannel() or testMode
 
 	if inGroup then
 		for _, name in ipairs(GroupNames()) do
 			local m = members[name]
-			if not m then
-				-- Mitglieder ohne Addon werden nicht angezeigt (siehe /sqh version)
-			elseif m.zone ~= myZoneKey then
-				withAddon = withAddon + 1
-				rows[#rows + 1] = { ("%s|cff888888: %s (%s)|r"):format(ColoredName(name), T("anderes Gebiet", "different zone"), ZoneLabel(m.zone)) }
-			else
-				withAddon = withAddon + 1
-				local iLack, theyLack = {}, {}
-				local theirDone = completedBy[name]
-				for id in pairs(m.ids) do
-					-- hat er, ich nicht - aber ich habe sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
-					if not myIds[id] and not IsDone(id) and CanAccept(id) then iLack[#iLack + 1] = id end
-				end
-				for id in pairs(myIds) do
-					-- habe ich, er nicht - aber er hat sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
-					if not m.ids[id] and not (theirDone and theirDone[id])
-						and not (blockedBy[name] and blockedBy[name][id])
-						and not (learnedBlocked[name] and learnedBlocked[name][id]) then
-						theyLack[#theyLack + 1] = id
+			if m then -- Mitglieder ohne Addon werden nicht angezeigt (siehe /sqh version)
+				if m.zone ~= myZoneKey then
+					if showAll then
+						entries[#entries + 1] = { kind = "header", name = name, tone = "grey",
+							status = T("anderes Gebiet", "different zone") .. " (" .. ZoneLabel(m.zone) .. ")" }
 					end
-				end
-				table.sort(iLack); table.sort(theyLack)
-
-				if #iLack + #theyLack == 0 then
-					sameRows[#sameRows + 1] = { ColoredName(name) }
 				else
-					hasDiff = true
-					sigParts[#sigParts + 1] = name .. ":" .. table.concat(iLack, ",") .. "/" .. table.concat(theyLack, ",")
-					rows[#rows + 1] = { ColoredName(name) }
-					for _, id in ipairs(iLack) do
-						rows[#rows + 1] = { ("  |cffff6060%s|r %s"):format(T("Dir fehlt:", "You lack:"), QuestName(id)), id }
+					local iLack, theyLack = {}, {}
+					local theirDone = completedBy[name]
+					for id in pairs(m.ids) do
+						-- hat er, ich nicht - aber ich habe sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
+						if not myIds[id] and not IsDone(id) and CanAccept(id) then iLack[#iLack + 1] = id end
 					end
-					for _, id in ipairs(theyLack) do
-						rows[#rows + 1] = { ("  |cff60c0ff%s|r %s"):format(T("Hat nicht:", "Lacks:"), QuestName(id)), id, CanShare(id) }
+					for id in pairs(myIds) do
+						-- habe ich, er nicht - aber er hat sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
+						if not m.ids[id] and not (theirDone and theirDone[id])
+							and not (blockedBy[name] and blockedBy[name][id])
+							and not (learnedBlocked[name] and learnedBlocked[name][id]) then
+							theyLack[#theyLack + 1] = id
+						end
+					end
+					table.sort(iLack); table.sort(theyLack)
+
+					if #iLack + #theyLack == 0 then
+						if showAll then
+							entries[#entries + 1] = { kind = "header", name = name, tone = "ok", status = T("Alles gleich", "In sync") }
+						end
+					else
+						hasDiff = true
+						sigParts[#sigParts + 1] = name .. ":" .. table.concat(iLack, ",") .. "/" .. table.concat(theyLack, ",")
+						entries[#entries + 1] = { kind = "header", name = name, tone = "warn", status = CountText(#iLack + #theyLack) }
+						for _, id in ipairs(iLack) do
+							entries[#entries + 1] = { kind = "quest", id = id, tone = "lack", label = T("Dir fehlt", "You lack") }
+						end
+						for _, id in ipairs(theyLack) do
+							entries[#entries + 1] = { kind = "quest", id = id, tone = "they", label = T("Hat nicht", "Lacks"), share = CanShare(id) }
+						end
 					end
 				end
 			end
 		end
 	end
 
-	if not hasDiff then
-		local msg, color
-		if not inGroup then
-			msg, color = T("Nicht in einer Gruppe.", "Not in a group."), "ff888888"
-		elseif withAddon == 0 then
-			msg, color = T("Kein Gruppenmitglied mit Addon.", "No group member has the addon."), "ff888888"
-		else
-			msg, color = T("Alle haben die gleichen Quests", "Everyone has the same quests"), "ff00ff00"
-		end
-		table.insert(rows, 1, { "|c" .. color .. msg .. "|r" })
-		for i, r in ipairs(sameRows) do table.insert(rows, 1 + i, r) end
+	if #entries == 0 and showAll then
+		entries[1] = { kind = "info", text = (not inGroup) and T("Nicht in einer Gruppe.", "Not in a group.")
+			or T("Kein Gruppenmitglied mit Addon.", "No group member has the addon.") }
 	end
-	return rows, hasDiff, table.concat(sigParts, ";")
+	return entries, hasDiff, table.concat(sigParts, ";")
+end
+
+local function MakePill(parent)
+	local pill = {}
+	pill.tex = parent:CreateTexture(nil, "ARTWORK")
+	pill.text = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	pill.text:SetPoint("CENTER", pill.tex, "CENTER", 0, 0)
+	return pill
+end
+
+local function SetPill(pill, tone, text, width, height)
+	local t = TONES[tone]
+	pill.tex:SetColorTexture(t.bg[1], t.bg[2], t.bg[3], 1)
+	pill.text:SetTextColor(t.fg[1], t.fg[2], t.fg[3])
+	pill.text:SetText(text)
+	pill.tex:SetSize(width or (pill.text:GetStringWidth() + 18), height)
+	pill.tex:Show()
+	pill.text:Show()
+end
+
+local function HidePill(pill)
+	pill.tex:Hide()
+	pill.text:Hide()
 end
 
 local function GetRow(i)
@@ -592,23 +633,48 @@ local function GetRow(i)
 	if row then return row end
 
 	row = CreateFrame("Button", nil, ui)
-	row:SetSize(WIDTH - 16, ROW_H)
-	row:SetPoint("TOPLEFT", ui, "TOPLEFT", 8, -26 - (i - 1) * ROW_H)
 	row:RegisterForClicks("LeftButtonUp")
+
+	row.bg = row:CreateTexture(nil, "BACKGROUND")
+	row.bg:SetAllPoints()
+	row.bg:SetColorTexture(0.145, 0.125, 0.10, 1)
+	row.divider = row:CreateTexture(nil, "BORDER")
+	row.divider:SetPoint("TOPLEFT")
+	row.divider:SetPoint("TOPRIGHT")
+	row.divider:SetHeight(1)
+	row.divider:SetColorTexture(0.21, 0.19, 0.14, 1)
 	row.hl = row:CreateTexture(nil, "HIGHLIGHT")
 	row.hl:SetAllPoints()
-	row.hl:SetColorTexture(1, 1, 1, 0.15)
+	row.hl:SetColorTexture(1, 1, 1, 0.08)
+
+	-- Kopfzeile eines Spielers: Avatar (Klassenfarbe), Name, Status
+	row.avatar = row:CreateTexture(nil, "ARTWORK")
+	row.avatar:SetSize(18, 18)
+	row.avatar:SetPoint("LEFT", row, "LEFT", 8, 0)
+	row.avatarText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	row.avatarText:SetPoint("CENTER", row.avatar, "CENTER", 0, 0)
+	row.avatarText:SetTextColor(0.05, 0.08, 0.08)
+	row.status = MakePill(row)
+	row.status.tex:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+	row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	row.name:SetPoint("LEFT", row.avatar, "RIGHT", 8, 0)
+	row.name:SetPoint("RIGHT", row.status.tex, "LEFT", -6, 0)
+	row.name:SetJustifyH("LEFT")
+	row.name:SetWordWrap(false)
+
+	-- Questzeile: Etikett, Name, Teilen-Button
+	row.kind = MakePill(row)
+	row.kind.tex:SetPoint("LEFT", row, "LEFT", 8, 0)
 	row.fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	row.fs:SetAllPoints()
 	row.fs:SetJustifyH("LEFT")
 	row.fs:SetWordWrap(false)
 
 	row.share = CreateFrame("Button", nil, row)
-	row.share:SetSize(52, ROW_H - 2)
-	row.share:SetPoint("RIGHT", row, "RIGHT", -2, 0)
+	row.share:SetSize(52, QUEST_H - 6)
+	row.share:SetPoint("RIGHT", row, "RIGHT", -8, 0)
 	row.share.bg = row.share:CreateTexture(nil, "BACKGROUND")
 	row.share.bg:SetAllPoints()
-	row.share.bg:SetColorTexture(0.2, 0.6, 0.25, 0.8)
+	row.share.bg:SetColorTexture(0.184, 0.42, 0.235, 1)
 	row.share.hl = row.share:CreateTexture(nil, "HIGHLIGHT")
 	row.share.hl:SetAllPoints()
 	row.share.hl:SetColorTexture(1, 1, 1, 0.25)
@@ -642,6 +708,47 @@ local function GetRow(i)
 	return row
 end
 
+local function ConfigureRow(row, e)
+	local isHeader, isQuest = e.kind == "header", e.kind == "quest"
+	row.questId = e.id
+	row:EnableMouse(isQuest)
+	row.bg:SetShown(e.kind ~= "info")
+	row.divider:SetShown(isQuest)
+
+	row.avatar:SetShown(isHeader)
+	row.avatarText:SetShown(isHeader)
+	row.name:SetShown(isHeader)
+	if isHeader then
+		local r, g, b = ClassColor(e.name)
+		row.avatar:SetColorTexture(r, g, b, 1)
+		row.avatarText:SetText(e.name:match("[%z\1-\127\194-\244][\128-\191]*") or "?")
+		row.name:SetText(e.name)
+		row.name:SetTextColor(r, g, b)
+		SetPill(row.status, e.tone, e.status, nil, 18)
+	else
+		HidePill(row.status)
+	end
+
+	if isQuest then
+		SetPill(row.kind, e.tone, e.label, 66, 16)
+	else
+		HidePill(row.kind)
+	end
+
+	row.fs:SetShown(not isHeader)
+	row.fs:ClearAllPoints()
+	if isQuest then
+		row.fs:SetText(QuestName(e.id))
+		row.fs:SetPoint("LEFT", row, "LEFT", 82, 0)
+		row.fs:SetPoint("RIGHT", row, "RIGHT", e.share and -66 or -8, 0)
+	elseif e.kind == "info" then
+		row.fs:SetText("|cff9b9180" .. e.text .. "|r")
+		row.fs:SetPoint("LEFT", row, "LEFT", 8, 0)
+		row.fs:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+	end
+	row.share:SetShown(e.share and true or false)
+end
+
 local function CreateUI()
 	local f = CreateFrame("Frame", "SexyQuestHelperFrame", UIParent, "BackdropTemplate")
 	f:SetSize(WIDTH, 60)
@@ -656,7 +763,8 @@ local function CreateUI()
 		edgeSize = 12,
 		insets = { left = 3, right = 3, top = 3, bottom = 3 },
 	})
-	f:SetBackdropColor(0, 0, 0, 0.8)
+	f:SetBackdropColor(0.08, 0.065, 0.05, 0.96)
+	f:SetBackdropBorderColor(0.42, 0.34, 0.15, 1)
 
 	local pos = SexyQuestHelperDB.pos
 	if pos then
@@ -672,8 +780,18 @@ local function CreateUI()
 		SexyQuestHelperDB.pos = { point = point, relPoint = relPoint, x = x, y = y }
 	end)
 
+	f.band = f:CreateTexture(nil, "BACKGROUND")
+	f.band:SetPoint("TOPLEFT", f, "TOPLEFT", 3, -3)
+	f.band:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -3)
+	f.band:SetHeight(BAND_H - 3)
+	f.band:SetColorTexture(0.15, 0.12, 0.07, 1)
+
 	f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	f.title:SetPoint("TOPLEFT", 8, -8)
+	f.title:SetPoint("TOPLEFT", 12, -9)
+	f.title:SetText("SexyQuestHelper")
+	f.zone = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	f.zone:SetPoint("LEFT", f.title, "RIGHT", 8, 0)
+	f.zone:SetTextColor(0.72, 0.68, 0.6)
 
 	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
 	close:SetPoint("TOPRIGHT", 2, 2)
@@ -689,7 +807,7 @@ end
 
 function Refresh()
 	if not ui then return end
-	local rows, hasDiff, sig = BuildRows()
+	local entries, hasDiff, sig = BuildEntries(forceShow)
 	ui.sig = sig
 
 	-- Beide Seiten nehmen oft gleichzeitig Quests an: bis die Liste des anderen
@@ -711,21 +829,23 @@ function Refresh()
 		return
 	end
 
-	ui.title:SetText(("SexyQuestHelper |cffaaaaaa- %s|r"):format(myZone ~= "" and myZone or "?"))
-	for i, data in ipairs(rows) do
-		local row = GetRow(i)
-		row.questId = data[2]
-		row:EnableMouse(data[2] ~= nil)
-		row.fs:SetText(data[1])
-		row.share:SetShown(data[3] and true or false)
-		row.fs:ClearAllPoints()
-		row.fs:SetPoint("LEFT", row, "LEFT", 0, 0)
-		row.fs:SetPoint("RIGHT", row, "RIGHT", data[3] and -56 or 0, 0)
-		row:Show()
-	end
-	for i = #rows + 1, #rowPool do rowPool[i]:Hide() end
+	ui.zone:SetText(myZone ~= "" and myZone or "?")
 
-	ui:SetHeight(34 + #rows * ROW_H)
+	local y = BAND_H + 8
+	for i, e in ipairs(entries) do
+		local row = GetRow(i)
+		local h = (e.kind == "header" and HEADER_H) or (e.kind == "quest" and QUEST_H) or INFO_H
+		if e.kind == "header" and i > 1 then y = y + CARD_GAP end
+		row:ClearAllPoints()
+		row:SetPoint("TOPLEFT", ui, "TOPLEFT", 12, -y)
+		row:SetSize(WIDTH - 24, h)
+		ConfigureRow(row, e)
+		row:Show()
+		y = y + h
+	end
+	for i = #entries + 1, #rowPool do rowPool[i]:Hide() end
+
+	ui:SetHeight(y + 12)
 	ui:Show()
 end
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.12
+- New window design with player cards (class-colored avatar, status label, quest labels, Share button)
+- When the window opens automatically only players with differences are shown; opening it manually with /sqh shows all players
+
 ## 1.0.11
 - Optional dependency on the QuestieDB addon: prerequisite quests, exclusive quests, quest-chain progress and minimum level are checked from its data, so quests a member cannot accept are no longer reported
 
