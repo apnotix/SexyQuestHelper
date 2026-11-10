@@ -6,10 +6,11 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.6" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.7" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
 local completedBy = {} -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied schon abgeschlossen hat
 local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
+local DIFF_SETTLE = 4       -- Sekunden, die ein Unterschied bestehen muss, bevor das Fenster erscheint
 local IGNORE_AFTER_SCAN = 2 -- Sekunden, in denen eigene Auf-/Zuklapp-Events ignoriert werden
 local CHUNK_SIZE = 200      -- Zeichen Quest-IDs pro Nachricht (Limit: 255 inkl. Header)
 
@@ -274,6 +275,7 @@ end
 ---------------------------------------------------------------------------
 
 local WIDTH, ROW_H = 330, 16
+local pendingSig, pendingSince -- noch nicht angezeigter Unterschied und seit wann er besteht
 local forceShow = false     -- per /sqh erzwungen (auch ohne Unterschiede)
 local dismissedSig = nil    -- Unterschiede, die der Nutzer weggeklickt hat
 local rowPool = {}
@@ -554,7 +556,21 @@ function Refresh()
 	local rows, hasDiff, sig = BuildRows()
 	ui.sig = sig
 
-	if not (forceShow or (hasDiff and sig ~= dismissedSig)) then
+	-- Beide Seiten nehmen oft gleichzeitig Quests an: bis die Liste des anderen
+	-- angekommen ist, waere das ein Scheinunterschied. Ein Unterschied muss daher
+	-- DIFF_SETTLE Sekunden unveraendert bestehen, bevor das Fenster aufgeht.
+	local visibleDiff = false
+	if hasDiff then
+		if sig ~= pendingSig then
+			pendingSig, pendingSince = sig, GetTime()
+			C_Timer.After(DIFF_SETTLE + 0.2, function() Refresh() end)
+		end
+		visibleDiff = (GetTime() - pendingSince >= DIFF_SETTLE) and sig ~= dismissedSig
+	else
+		pendingSig = nil
+	end
+
+	if not (forceShow or visibleDiff) then
 		ui:Hide()
 		return
 	end
@@ -621,6 +637,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		Refresh()
 	elseif event == "QUEST_LOG_UPDATE" then
 		if GetTime() >= ignoreUntil then QueueScan(false) end
+	elseif event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "QUEST_TURNED_IN" then
+		-- echte Aenderungen: immer scannen (QUEST_LOG_UPDATE wird nach einem Scan kurz
+		-- ignoriert und koennte sonst eine gleich danach angenommene Quest verschlucken)
+		QueueScan(false)
 	elseif event == "GROUP_ROSTER_UPDATE" then
 		PruneMembers()
 		QueueScan(true) -- neue Mitglieder brauchen unsere Liste
@@ -652,6 +672,9 @@ end)
 for _, e in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "QUEST_LOG_UPDATE",
 	"GROUP_ROSTER_UPDATE", "CHAT_MSG_ADDON" }) do
 	frame:RegisterEvent(e)
+end
+for _, e in ipairs({ "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_TURNED_IN" }) do
+	pcall(frame.RegisterEvent, frame, e) -- nicht in jedem Client vorhanden
 end
 pcall(frame.RegisterEvent, frame, "QUEST_DATA_LOAD_RESULT") -- nicht in jedem Client vorhanden
 

@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.7
+- Fix: quests accepted at the same time were briefly (or permanently) reported as missing. Differences must now persist for 4 seconds before the window opens, and quest accept/remove/turn-in always trigger a scan
+
 ## 1.0.6
 - Quests that a member already turned in (e.g. because they hold the follow-up quest) are no longer reported as differences; clients tell each other which quests they have already completed
 
