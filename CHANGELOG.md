@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.10
+- Quests a member cannot accept (e.g. missing prerequisite quest) are no longer reported as differences and get no Share button. Uses the Questie database when installed; otherwise the addon learns from the "not eligible" message after the first share attempt
+
 ## 1.0.9
 - Group members without the addon are no longer listed in the window (`/sqh version` still shows them)
 

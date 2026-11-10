@@ -6,8 +6,10 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.9" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.10" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
+local blockedBy = {}      -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied laut seiner Meldung nicht annehmen kann
+local learnedBlocked = {} -- wie blockedBy, aber aus Fehlermeldungen beim Teilen gelernt
 local completedBy = {} -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied schon abgeschlossen hat
 local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
 local DIFF_SETTLE = 4       -- Sekunden, die ein Unterschied bestehen muss, bevor das Fenster erscheint
@@ -63,6 +65,26 @@ end
 local function IsDone(id)
 	local fn = (C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted) or IsQuestFlaggedCompleted
 	return fn and fn(id) and true or false
+end
+
+-- Kann ICH diese Quest annehmen (Vorquest erfuellt, Stufe, ...)? Dafuer gibt es
+-- keine Blizzard-API; wir fragen die Questie-Datenbank, falls vorhanden.
+-- Ohne Questie ist die Antwort immer "ja" (unbekannt).
+local acceptCache = {}
+local function CanAccept(id)
+	local c = acceptCache[id]
+	if c and GetTime() - c.t < 30 then return c.value end
+	local value = true
+	local loader = _G.QuestieLoader
+	if loader and loader.ImportModule then
+		local ok, db = pcall(loader.ImportModule, loader, "QuestieDB")
+		if ok and db and db.IsDoable then
+			local ok2, doable = pcall(db.IsDoable, id)
+			if ok2 and doable == false then value = false end
+		end
+	end
+	acceptCache[id] = { value = value, t = GetTime() }
+	return value
 end
 
 local function CurrentZone()
@@ -195,10 +217,25 @@ local function Broadcast()
 	Send("V|" .. VERSION, channel)
 end
 
--- Hat ein Mitglied eine Quest schon abgegeben (und dadurch evtl. die Folgequest),
--- kann nur ER das wissen. Deshalb melden wir ihm, welche Quests aus SEINER Liste
--- wir selbst schon abgeschlossen haben (Nachricht "C"/"E"); er blendet sie dann
--- aus seinen Unterschieden aus. Umgekehrt prueft jeder lokal per IsDone.
+-- Zwei Dinge kann nur der jeweils ANDERE wissen: ob er eine Quest aus unserer
+-- Liste schon abgegeben hat (Folgequest!) und ob er sie ueberhaupt annehmen
+-- koennte (Vorquest fehlt). Deshalb melden wir ihm nach jeder empfangenen Liste,
+-- welche Quests aus SEINER Liste wir schon abgeschlossen haben ("C"/"E") bzw.
+-- nicht annehmen koennen ("N"/"O"). Er blendet sie aus seinen Unterschieden aus.
+local function SendIdList(first, cont, list, channel)
+	local isFirst, chunk = true, ""
+	local function flush()
+		Send((isFirst and first or cont) .. "|" .. chunk, channel)
+		isFirst, chunk = false, ""
+	end
+	for _, id in ipairs(list) do
+		local s = tostring(id)
+		if #chunk + #s + 1 > CHUNK_SIZE then flush() end
+		chunk = (chunk == "") and s or (chunk .. "," .. s)
+	end
+	if isFirst or chunk ~= "" then flush() end -- auch leer senden: setzt alte Meldungen zurueck
+end
+
 local replyPending = {}
 local function ScheduleDoneReply(name)
 	if replyPending[name] then return end
@@ -207,22 +244,17 @@ local function ScheduleDoneReply(name)
 		replyPending[name] = nil
 		local m, channel = members[name], GroupChannel()
 		if not m or not channel then return end
-		local done = {}
+		local done, blocked = {}, {}
 		for id in pairs(m.ids) do
-			if IsDone(id) then done[#done + 1] = id end
+			if IsDone(id) then
+				done[#done + 1] = id
+			elseif not myIds[id] and not CanAccept(id) then
+				blocked[#blocked + 1] = id
+			end
 		end
-		table.sort(done)
-		local first, chunk = true, ""
-		local function flush()
-			Send((first and "C|" or "E|") .. chunk, channel)
-			first, chunk = false, ""
-		end
-		for _, id in ipairs(done) do
-			local s = tostring(id)
-			if #chunk + #s + 1 > CHUNK_SIZE then flush() end
-			chunk = (chunk == "") and s or (chunk .. "," .. s)
-		end
-		if first or chunk ~= "" then flush() end -- auch leer senden: setzt alte Meldungen zurueck
+		table.sort(done); table.sort(blocked)
+		SendIdList("C", "E", done, channel)
+		SendIdList("N", "O", blocked, channel)
 	end)
 end
 
@@ -254,9 +286,10 @@ local function OnAddonMessage(prefix, msg, _, sender)
 		versions[name] = rest
 		Refresh()
 		return
-	elseif kind == "C" or kind == "E" then
-		if kind == "C" or not completedBy[name] then completedBy[name] = {} end
-		for id in rest:gmatch("%d+") do completedBy[name][tonumber(id)] = true end
+	elseif kind == "C" or kind == "E" or kind == "N" or kind == "O" then
+		local store = (kind == "C" or kind == "E") and completedBy or blockedBy
+		if kind == "C" or kind == "N" or not store[name] then store[name] = {} end
+		for id in rest:gmatch("%d+") do store[name][tonumber(id)] = true end
 		Refresh()
 		return
 	else
@@ -317,6 +350,8 @@ local function CanShare(id)
 	return true
 end
 
+local lastShare -- { id, t }: zuletzt geteilte Quest, um Fehlermeldungen zuzuordnen
+
 local function ShareQuest(id)
 	local index = QuestLogIndex(id)
 	if not index then return end
@@ -330,10 +365,39 @@ local function ShareQuest(id)
 		return
 	end
 	local ok, err = pcall(QuestLogPushQuest)
+	lastShare = { id = id, t = GetTime() }
 	if ok then
 		print("SexyQuestHelper: " .. T("Quest geteilt: ", "Quest shared: ") .. QuestLink(id))
 	else
 		print("SexyQuestHelper: " .. tostring(err))
+	end
+end
+
+-- Fehlermeldungen beim Teilen ("X is not eligible for that quest" usw.) merken wir
+-- uns: die Quest ist fuer dieses Mitglied nicht annehmbar, der Button und der
+-- Unterschied verschwinden. Das greift auch ohne Questie, nach dem ersten Versuch.
+local function ToPattern(fmt)
+	local p = fmt:gsub("([%%%(%)%.%+%-%*%?%[%]%^%$])", "%%%1")
+	p = p:gsub("%%%%s", "(.+)")
+	return "^" .. p .. "$"
+end
+
+local pushErrorPatterns = {}
+for _, key in ipairs({ "ERR_QUEST_PUSH_INVALID_S", "ERR_QUEST_PUSH_ALREADY_DONE_S", "ERR_QUEST_PUSH_ONQUEST_S" }) do
+	if type(_G[key]) == "string" then pushErrorPatterns[#pushErrorPatterns + 1] = ToPattern(_G[key]) end
+end
+
+local function OnSystemMessage(msg)
+	if not lastShare or GetTime() - lastShare.t > 15 or type(msg) ~= "string" then return end
+	for _, pattern in ipairs(pushErrorPatterns) do
+		local who = msg:match(pattern)
+		if who then
+			local name = who:match("^([^%s%-]+)") or who
+			learnedBlocked[name] = learnedBlocked[name] or {}
+			learnedBlocked[name][lastShare.id] = true
+			Refresh()
+			return
+		end
 	end
 end
 
@@ -427,12 +491,16 @@ local function BuildRows()
 				local iLack, theyLack = {}, {}
 				local theirDone = completedBy[name]
 				for id in pairs(m.ids) do
-					-- hat er, ich nicht - aber ich habe sie schon abgegeben: kein Unterschied
-					if not myIds[id] and not IsDone(id) then iLack[#iLack + 1] = id end
+					-- hat er, ich nicht - aber ich habe sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
+					if not myIds[id] and not IsDone(id) and CanAccept(id) then iLack[#iLack + 1] = id end
 				end
 				for id in pairs(myIds) do
-					-- habe ich, er nicht - aber er hat sie schon abgegeben: kein Unterschied
-					if not m.ids[id] and not (theirDone and theirDone[id]) then theyLack[#theyLack + 1] = id end
+					-- habe ich, er nicht - aber er hat sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
+					if not m.ids[id] and not (theirDone and theirDone[id])
+						and not (blockedBy[name] and blockedBy[name][id])
+						and not (learnedBlocked[name] and learnedBlocked[name][id]) then
+						theyLack[#theyLack + 1] = id
+					end
 				end
 				table.sort(iLack); table.sort(theyLack)
 
@@ -628,6 +696,8 @@ local function DoScan(forceBroadcast)
 	if forceBroadcast or signature ~= mySignature then
 		mySignature = signature
 		Broadcast()
+		-- eigener Stand geaendert (z.B. Vorquest abgegeben): Meldungen an alle neu senden
+		for name in pairs(members) do ScheduleDoneReply(name) end
 	end
 	if forceBroadcast and GroupChannel() then Send("R|", GroupChannel()) end
 	Refresh()
@@ -643,7 +713,7 @@ local function PruneMembers()
 	local present = {}
 	for _, name in ipairs(GroupNames()) do present[name] = true end
 	for name in pairs(members) do
-		if not present[name] then members[name] = nil; versions[name] = nil; completedBy[name] = nil end
+		if not present[name] then members[name] = nil; versions[name] = nil; completedBy[name] = nil; blockedBy[name] = nil; learnedBlocked[name] = nil end
 	end
 end
 
@@ -654,6 +724,8 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		Refresh()
 	elseif event == "QUEST_LOG_UPDATE" then
 		if GetTime() >= ignoreUntil then QueueScan(false) end
+	elseif event == "CHAT_MSG_SYSTEM" then
+		OnSystemMessage(...)
 	elseif event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "QUEST_TURNED_IN" then
 		-- echte Aenderungen: immer scannen (QUEST_LOG_UPDATE wird nach einem Scan kurz
 		-- ignoriert und koennte sonst eine gleich danach angenommene Quest verschlucken)
@@ -687,7 +759,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 for _, e in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "QUEST_LOG_UPDATE",
-	"GROUP_ROSTER_UPDATE", "CHAT_MSG_ADDON" }) do
+	"GROUP_ROSTER_UPDATE", "CHAT_MSG_ADDON", "CHAT_MSG_SYSTEM" }) do
 	frame:RegisterEvent(e)
 end
 for _, e in ipairs({ "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_TURNED_IN" }) do
