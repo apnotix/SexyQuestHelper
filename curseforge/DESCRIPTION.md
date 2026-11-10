@@ -28,6 +28,7 @@ Every player running the addon sends the quest IDs of the current zone to the gr
 | `/sqh` | Show or hide the window (also when there are no differences) |
 | `/sqh refresh` | Re-scan your quest log and re-send it to the group |
 | `/sqh test` | Toggle a simulated group member to preview the display |
+| `/sqh version` | Show the addon version of every group member and whether they are up to date |
 | `/sqh debug` | Print diagnostics (detected zone, quests, addon message counters) |
 
 ## Notes

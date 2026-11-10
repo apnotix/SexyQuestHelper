@@ -6,7 +6,7 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.7" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.8" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
 local completedBy = {} -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied schon abgeschlossen hat
 local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
@@ -360,9 +360,18 @@ local function OpenQuest(id)
 	end
 end
 
--- Versions-Anhang fuer eine Zeile ("" wenn keine Daten vom Mitglied vorliegen)
-local function VersionTag(name)
-	if not members[name] then return "" end
+-- Vergleicht zwei Versionen "a.b.c": -1, 0 oder 1
+local function CompareVersions(x, y)
+	local ax, ay = {}, {}
+	for n in tostring(x):gmatch("%d+") do ax[#ax + 1] = tonumber(n) end
+	for n in tostring(y):gmatch("%d+") do ay[#ay + 1] = tonumber(n) end
+	for i = 1, math.max(#ax, #ay) do
+		local dx, dy = ax[i] or 0, ay[i] or 0
+		if dx ~= dy then return dx < dy and -1 or 1 end
+	end
+	return 0
+end
+
 	local v = versions[name]
 	return v and (" |cff888888v" .. v .. "|r") or (" |cff888888(" .. T("alte Version", "old version") .. ")|r")
 end
@@ -411,7 +420,7 @@ local function BuildRows()
 			if not m then
 				rows[#rows + 1] = { ("%s|cff888888: %s|r"):format(ColoredName(name), T("kein Addon / keine Daten", "no addon / no data")) }
 			elseif m.zone ~= myZoneKey then
-				rows[#rows + 1] = { ("%s|cff888888: %s (%s)|r%s"):format(ColoredName(name), T("anderes Gebiet", "different zone"), ZoneLabel(m.zone), VersionTag(name)) }
+				rows[#rows + 1] = { ("%s|cff888888: %s (%s)|r"):format(ColoredName(name), T("anderes Gebiet", "different zone"), ZoneLabel(m.zone)) }
 			else
 				local iLack, theyLack = {}, {}
 				local theirDone = completedBy[name]
@@ -426,11 +435,11 @@ local function BuildRows()
 				table.sort(iLack); table.sort(theyLack)
 
 				if #iLack + #theyLack == 0 then
-					sameRows[#sameRows + 1] = { ("%s%s"):format(ColoredName(name), VersionTag(name)) }
+					sameRows[#sameRows + 1] = { ColoredName(name) }
 				else
 					hasDiff = true
 					sigParts[#sigParts + 1] = name .. ":" .. table.concat(iLack, ",") .. "/" .. table.concat(theyLack, ",")
-					rows[#rows + 1] = { ("%s%s"):format(ColoredName(name), VersionTag(name)) }
+					rows[#rows + 1] = { ColoredName(name) }
 					for _, id in ipairs(iLack) do
 						rows[#rows + 1] = { ("  |cffff6060%s|r %s"):format(T("Dir fehlt:", "You lack:"), QuestName(id)), id }
 					end
@@ -575,7 +584,7 @@ function Refresh()
 		return
 	end
 
-	ui.title:SetText(("SexyQuestHelper |cffaaaaaav%s - %s|r"):format(VERSION, myZone ~= "" and myZone or "?"))
+	ui.title:SetText(("SexyQuestHelper |cffaaaaaa- %s|r"):format(myZone ~= "" and myZone or "?"))
 	for i, data in ipairs(rows) do
 		local row = GetRow(i)
 		row.questId = data[2]
@@ -719,6 +728,31 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 				local title, isHeader, _, questID = GetEntry(i)
 				print((isHeader and "  [%s]" or "    %s (%s)"):format(tostring(title), tostring(questID)))
 			end
+		end
+		return
+	end
+	if arg == "version" or arg == "v" then
+		local names = GroupNames()
+		local newest = VERSION
+		for _, name in ipairs(names) do
+			if versions[name] and CompareVersions(versions[name], newest) > 0 then newest = versions[name] end
+		end
+		print(("SexyQuestHelper v%s %s"):format(VERSION,
+			CompareVersions(VERSION, newest) < 0 and ("|cffff4040(" .. T("veraltet, neueste in der Gruppe: v", "outdated, newest in group: v") .. newest .. ")|r")
+			or ("|cff00ff00(" .. T("aktuell", "up to date") .. ")|r")))
+		for _, name in ipairs(names) do
+			local v = versions[name]
+			local status
+			if not members[name] and not v then
+				status = "|cff888888" .. T("kein Addon / keine Daten", "no addon / no data") .. "|r"
+			elseif not v then
+				status = "|cffff4040" .. T("alte Version (vor 1.0.3)", "old version (before 1.0.3)") .. "|r"
+			elseif CompareVersions(v, newest) < 0 then
+				status = "|cffff4040v" .. v .. " - " .. T("veraltet", "outdated") .. "|r"
+			else
+				status = "|cff00ff00v" .. v .. " - " .. T("aktuell", "up to date") .. "|r"
+			end
+			print("  " .. ColoredName(name) .. ": " .. status)
 		end
 		return
 	end

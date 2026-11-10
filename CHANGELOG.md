@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.8
+- Versions are no longer shown in the window; new command `/sqh version` lists the addon version of every group member and whether they are up to date
+
 ## 1.0.7
 - Fix: quests accepted at the same time were briefly (or permanently) reported as missing. Differences must now persist for 4 seconds before the window opens, and quest accept/remove/turn-in always trigger a scan
 
