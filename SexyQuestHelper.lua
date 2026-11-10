@@ -6,8 +6,9 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.5" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.6" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
+local completedBy = {} -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied schon abgeschlossen hat
 local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
 local IGNORE_AFTER_SCAN = 2 -- Sekunden, in denen eigene Auf-/Zuklapp-Events ignoriert werden
 local CHUNK_SIZE = 200      -- Zeichen Quest-IDs pro Nachricht (Limit: 255 inkl. Header)
@@ -56,6 +57,11 @@ local function SetHeaderCollapsed(i, collapsed)
 		fn = (C_QuestLog and C_QuestLog.ExpandQuestHeader) or ExpandQuestHeader
 	end
 	if fn then fn(i) end
+end
+
+local function IsDone(id)
+	local fn = (C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted) or IsQuestFlaggedCompleted
+	return fn and fn(id) and true or false
 end
 
 local function CurrentZone()
@@ -188,6 +194,37 @@ local function Broadcast()
 	Send("V|" .. VERSION, channel)
 end
 
+-- Hat ein Mitglied eine Quest schon abgegeben (und dadurch evtl. die Folgequest),
+-- kann nur ER das wissen. Deshalb melden wir ihm, welche Quests aus SEINER Liste
+-- wir selbst schon abgeschlossen haben (Nachricht "C"/"E"); er blendet sie dann
+-- aus seinen Unterschieden aus. Umgekehrt prueft jeder lokal per IsDone.
+local replyPending = {}
+local function ScheduleDoneReply(name)
+	if replyPending[name] then return end
+	replyPending[name] = true
+	C_Timer.After(1.5, function()
+		replyPending[name] = nil
+		local m, channel = members[name], GroupChannel()
+		if not m or not channel then return end
+		local done = {}
+		for id in pairs(m.ids) do
+			if IsDone(id) then done[#done + 1] = id end
+		end
+		table.sort(done)
+		local first, chunk = true, ""
+		local function flush()
+			Send((first and "C|" or "E|") .. chunk, channel)
+			first, chunk = false, ""
+		end
+		for _, id in ipairs(done) do
+			local s = tostring(id)
+			if #chunk + #s + 1 > CHUNK_SIZE then flush() end
+			chunk = (chunk == "") and s or (chunk .. "," .. s)
+		end
+		if first or chunk ~= "" then flush() end -- auch leer senden: setzt alte Meldungen zurueck
+	end)
+end
+
 local function OnAddonMessage(prefix, msg, _, sender)
 	anyAddonMsgs = anyAddonMsgs + 1
 	if prefix ~= PREFIX then return end
@@ -216,6 +253,11 @@ local function OnAddonMessage(prefix, msg, _, sender)
 		versions[name] = rest
 		Refresh()
 		return
+	elseif kind == "C" or kind == "E" then
+		if kind == "C" or not completedBy[name] then completedBy[name] = {} end
+		for id in rest:gmatch("%d+") do completedBy[name][tonumber(id)] = true end
+		Refresh()
+		return
 	else
 		return
 	end
@@ -223,6 +265,7 @@ local function OnAddonMessage(prefix, msg, _, sender)
 	for id in rest:gmatch("%d+") do
 		members[name].ids[tonumber(id)] = true
 	end
+	ScheduleDoneReply(name)
 	Refresh()
 end
 
@@ -369,11 +412,14 @@ local function BuildRows()
 				rows[#rows + 1] = { ("%s|cff888888: %s (%s)|r%s"):format(ColoredName(name), T("anderes Gebiet", "different zone"), ZoneLabel(m.zone), VersionTag(name)) }
 			else
 				local iLack, theyLack = {}, {}
+				local theirDone = completedBy[name]
 				for id in pairs(m.ids) do
-					if not myIds[id] then iLack[#iLack + 1] = id end
+					-- hat er, ich nicht - aber ich habe sie schon abgegeben: kein Unterschied
+					if not myIds[id] and not IsDone(id) then iLack[#iLack + 1] = id end
 				end
 				for id in pairs(myIds) do
-					if not m.ids[id] then theyLack[#theyLack + 1] = id end
+					-- habe ich, er nicht - aber er hat sie schon abgegeben: kein Unterschied
+					if not m.ids[id] and not (theirDone and theirDone[id]) then theyLack[#theyLack + 1] = id end
 				end
 				table.sort(iLack); table.sort(theyLack)
 
@@ -564,7 +610,7 @@ local function PruneMembers()
 	local present = {}
 	for _, name in ipairs(GroupNames()) do present[name] = true end
 	for name in pairs(members) do
-		if not present[name] then members[name] = nil; versions[name] = nil end
+		if not present[name] then members[name] = nil; versions[name] = nil; completedBy[name] = nil end
 	end
 end
 

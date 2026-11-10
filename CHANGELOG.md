@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.6
+- Quests that a member already turned in (e.g. because they hold the follow-up quest) are no longer reported as differences; clients tell each other which quests they have already completed
+
 ## 1.0.5
 - Player names are shown in class colors
 - New "Share" button on quests you have and others lack (only when the quest can be shared)
