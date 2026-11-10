@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+- Player names are shown in class colors
+- New "Share" button on quests you have and others lack (only when the quest can be shared)
+
 ## 1.0.4
 - Fix: zones are now compared by map ID instead of the (localized) zone name, so players with different client languages match
 

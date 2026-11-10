@@ -6,7 +6,7 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.4" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.5" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
 local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
 local IGNORE_AFTER_SCAN = 2 -- Sekunden, in denen eigene Auf-/Zuklapp-Events ignoriert werden
@@ -253,6 +253,45 @@ local function QuestLink(id)
 	return ("|cffffff00|Hquest:%d:%d|h[%s]|h|r"):format(id, UnitLevel("player"), QuestName(id))
 end
 
+local function QuestLogIndex(id)
+	local index = (C_QuestLog and C_QuestLog.GetLogIndexForQuestID and C_QuestLog.GetLogIndexForQuestID(id))
+		or (GetQuestLogIndexByID and GetQuestLogIndexByID(id))
+	return (index and index > 0) and index or nil
+end
+
+local function InGroup()
+	return IsInGroup() or IsInRaid()
+end
+
+-- Retail kann die Teilbarkeit direkt abfragen. Im Legacy-Client geht das nur
+-- ueber die Auswahl im Questlog, die wir nicht bei jedem Refresh veraendern
+-- wollen - dort wird der Button angezeigt und erst beim Klick geprueft.
+local function CanShare(id)
+	if not myIds[id] or not InGroup() or testMode then return false end
+	if C_QuestLog and C_QuestLog.IsPushableQuest then return C_QuestLog.IsPushableQuest(id) and true or false end
+	return true
+end
+
+local function ShareQuest(id)
+	local index = QuestLogIndex(id)
+	if not index then return end
+	if C_QuestLog and C_QuestLog.SetSelectedQuest then
+		C_QuestLog.SetSelectedQuest(id)
+	elseif SelectQuestLogEntry then
+		SelectQuestLogEntry(index)
+	end
+	if not (C_QuestLog and C_QuestLog.IsPushableQuest) and GetQuestLogPushable and not GetQuestLogPushable() then
+		print("SexyQuestHelper: " .. T("Diese Quest kann nicht geteilt werden.", "This quest cannot be shared."))
+		return
+	end
+	local ok, err = pcall(QuestLogPushQuest)
+	if ok then
+		print("SexyQuestHelper: " .. T("Quest geteilt: ", "Quest shared: ") .. QuestLink(id))
+	else
+		print("SexyQuestHelper: " .. tostring(err))
+	end
+end
+
 local function OpenQuest(id)
 	if IsShiftKeyDown() then
 		if not ChatEdit_InsertLink(QuestLink(id)) then
@@ -268,9 +307,8 @@ local function OpenQuest(id)
 		pcall(QuestMapFrame_OpenToQuestDetails, id)
 		return
 	end
-	local index = (C_QuestLog and C_QuestLog.GetLogIndexForQuestID and C_QuestLog.GetLogIndexForQuestID(id))
-		or (GetQuestLogIndexByID and GetQuestLogIndexByID(id))
-	if index and index > 0 then -- Classic-Stil
+	local index = QuestLogIndex(id)
+	if index then -- Classic-Stil
 		if QuestLog_SetSelection then pcall(QuestLog_SetSelection, index)
 		elseif SelectQuestLogEntry then pcall(SelectQuestLogEntry, index) end
 		if QuestLogFrame then ShowUIPanel(QuestLogFrame) elseif ToggleQuestLog then ToggleQuestLog() end
@@ -284,20 +322,35 @@ local function VersionTag(name)
 	return v and (" |cff888888v" .. v .. "|r") or (" |cff888888(" .. T("alte Version", "old version") .. ")|r")
 end
 
+local unitByName = {}
+
 local function GroupNames()
+	wipe(unitByName)
 	local names = {}
 	local me = UnitName("player")
 	local prefix, count = "party", GetNumSubgroupMembers()
 	if IsInRaid() then prefix, count = "raid", GetNumGroupMembers() end
 	for i = 1, count do
 		local name = UnitName(prefix .. i)
-		if name and name ~= me then names[#names + 1] = name end
+		if name and name ~= me then
+			names[#names + 1] = name
+			unitByName[name] = prefix .. i
+		end
 	end
 	if testMode then names[#names + 1] = "Testmate" end
 	return names
 end
 
--- Liefert Zeilen { text, questID }, ob es Quest-Unterschiede gibt und deren Signatur.
+-- Spielername in Klassenfarbe (weiss, wenn die Klasse unbekannt ist)
+local function ColoredName(name)
+	local unit = unitByName[name]
+	local _, class = unit and UnitClass(unit)
+	local c = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+	if not c then return "|cffffffff" .. name .. "|r" end
+	return ("|cff%02x%02x%02x%s|r"):format(c.r * 255, c.g * 255, c.b * 255, name)
+end
+
+-- Liefert Zeilen { text, questID, teilbar }, ob es Quest-Unterschiede gibt und deren Signatur.
 local function BuildRows()
 	local rows, sameRows, sigParts, hasDiff = {}, {}, {}, false
 	local inGroup = GroupChannel() or testMode
@@ -306,9 +359,9 @@ local function BuildRows()
 		for _, name in ipairs(GroupNames()) do
 			local m = members[name]
 			if not m then
-				rows[#rows + 1] = { ("|cff888888%s: %s|r"):format(name, T("kein Addon / keine Daten", "no addon / no data")) }
+				rows[#rows + 1] = { ("%s|cff888888: %s|r"):format(ColoredName(name), T("kein Addon / keine Daten", "no addon / no data")) }
 			elseif m.zone ~= myZoneKey then
-				rows[#rows + 1] = { ("|cff888888%s: %s (%s)|r%s"):format(name, T("anderes Gebiet", "different zone"), ZoneLabel(m.zone), VersionTag(name)) }
+				rows[#rows + 1] = { ("%s|cff888888: %s (%s)|r%s"):format(ColoredName(name), T("anderes Gebiet", "different zone"), ZoneLabel(m.zone), VersionTag(name)) }
 			else
 				local iLack, theyLack = {}, {}
 				for id in pairs(m.ids) do
@@ -320,16 +373,16 @@ local function BuildRows()
 				table.sort(iLack); table.sort(theyLack)
 
 				if #iLack + #theyLack == 0 then
-					sameRows[#sameRows + 1] = { ("|cff00ff00%s|r%s"):format(name, VersionTag(name)) }
+					sameRows[#sameRows + 1] = { ("%s%s"):format(ColoredName(name), VersionTag(name)) }
 				else
 					hasDiff = true
 					sigParts[#sigParts + 1] = name .. ":" .. table.concat(iLack, ",") .. "/" .. table.concat(theyLack, ",")
-					rows[#rows + 1] = { ("|cffffd100%s|r%s"):format(name, VersionTag(name)) }
+					rows[#rows + 1] = { ("%s%s"):format(ColoredName(name), VersionTag(name)) }
 					for _, id in ipairs(iLack) do
 						rows[#rows + 1] = { ("  |cffff6060%s|r %s"):format(T("Dir fehlt:", "You lack:"), QuestName(id)), id }
 					end
 					for _, id in ipairs(theyLack) do
-						rows[#rows + 1] = { ("  |cff60c0ff%s|r %s"):format(T("Hat nicht:", "Lacks:"), QuestName(id)), id }
+						rows[#rows + 1] = { ("  |cff60c0ff%s|r %s"):format(T("Hat nicht:", "Lacks:"), QuestName(id)), id, CanShare(id) }
 					end
 				end
 			end
@@ -360,6 +413,24 @@ local function GetRow(i)
 	row.fs:SetAllPoints()
 	row.fs:SetJustifyH("LEFT")
 	row.fs:SetWordWrap(false)
+
+	row.share = CreateFrame("Button", nil, row)
+	row.share:SetSize(52, ROW_H - 2)
+	row.share:SetPoint("RIGHT", row, "RIGHT", -2, 0)
+	row.share.bg = row.share:CreateTexture(nil, "BACKGROUND")
+	row.share.bg:SetAllPoints()
+	row.share.bg:SetColorTexture(0.2, 0.6, 0.25, 0.8)
+	row.share.hl = row.share:CreateTexture(nil, "HIGHLIGHT")
+	row.share.hl:SetAllPoints()
+	row.share.hl:SetColorTexture(1, 1, 1, 0.25)
+	row.share.text = row.share:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.share.text:SetAllPoints()
+	row.share.text:SetText(T("Teilen", "Share"))
+	row.share:RegisterForClicks("LeftButtonUp")
+	row.share:SetScript("OnClick", function()
+		if row.questId then ShareQuest(row.questId) end
+	end)
+	row.share:Hide()
 
 	row:SetScript("OnEnter", function(self)
 		if not self.questId then return end
@@ -443,6 +514,10 @@ function Refresh()
 		row.questId = data[2]
 		row:EnableMouse(data[2] ~= nil)
 		row.fs:SetText(data[1])
+		row.share:SetShown(data[3] and true or false)
+		row.fs:ClearAllPoints()
+		row.fs:SetPoint("LEFT", row, "LEFT", 0, 0)
+		row.fs:SetPoint("RIGHT", row, "RIGHT", data[3] and -56 or 0, 0)
 		row:Show()
 	end
 	for i = #rows + 1, #rowPool do rowPool[i]:Hide() end
