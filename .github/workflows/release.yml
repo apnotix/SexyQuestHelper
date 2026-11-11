@@ -1,20 +1,32 @@
-name: Package and release
+name: Bump, tag and release
 
-# Läuft, wenn ein Tag gepusht wird (z. B. v1.0.1). Der BigWigs-Packager baut das
-# Zip anhand von .pkgmeta und lädt es zu CurseForge hoch (Projekt-ID steht in der
-# .toc als X-Curse-Project-ID). Zusätzlich entsteht ein GitHub-Release.
+# Läuft bei jedem Push auf main:
+#   1. erhöht die Patch-Nummer in SexyQuestHelper.toc (## Version:) und in der Konstante
+#      VERSION in SexyQuestHelper.lua, committet und legt einen Tag an (z. B. v1.0.14)
+#   2. baut das Addon-Paket mit BigWigsMods/packager und veröffentlicht es auf GitHub
+#      (immer) und CurseForge (wenn X-Curse-Project-ID in der TOC steht und CF_API_KEY
+#      gesetzt ist).
 #
-# Benötigt das Repo-Secret CF_API_KEY (CurseForge API-Token).
+# Der Bump-Commit stammt von github-actions[bot] und löst den Workflow nicht erneut aus.
+# Der Packager baut bei einem Branch-Push nicht, wenn HEAD einen Tag trägt ("Found future
+# tag", er erwartet einen eigenen Tag-Lauf). Tags, die mit dem GITHUB_TOKEN gepusht werden,
+# starten aber keine Workflows. Darum startet der Push-Lauf nach dem Tag den Workflow selbst
+# per workflow_dispatch auf dem Tag (das darf auch das GITHUB_TOKEN); erst dieser Lauf paketiert.
+#
+# Ein Commit, dessen Nachricht "[skip ci]" enthält, löst keinen Release aus.
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
 
     steps:
       - name: Checkout
@@ -22,7 +34,44 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Package and upload
+      - name: Bump version
+        id: bump
+        if: github.event_name == 'push'
+        run: |
+          current=$(grep -oP '(?<=## Version: )[0-9]+\.[0-9]+\.[0-9]+' SexyQuestHelper.toc)
+
+          if [ -z "$current" ]; then
+            echo "Could not find a ## Version: X.Y.Z line in SexyQuestHelper.toc" >&2
+            exit 1
+          fi
+
+          IFS='.' read -r major minor patch <<< "$current"
+          patch=$((patch + 1))
+          new="$major.$minor.$patch"
+
+          sed -i "s/## Version: .*/## Version: $new/" SexyQuestHelper.toc
+          # Das Addon liest seine Version aus dieser Konstante (GetAddOnMetadata fehlt auf Forever)
+          sed -i "s/^local VERSION = \"[0-9.]*\"/local VERSION = \"$new\"/" SexyQuestHelper.lua
+          grep -q "^local VERSION = \"$new\"" SexyQuestHelper.lua || { echo "VERSION in SexyQuestHelper.lua not updated" >&2; exit 1; }
+          echo "new_version=$new" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and tag
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add SexyQuestHelper.toc SexyQuestHelper.lua
+          git commit -m "Bump version to ${{ steps.bump.outputs.new_version }} [skip ci]"
+          git tag "v${{ steps.bump.outputs.new_version }}"
+          git push origin HEAD:main
+          git push origin "v${{ steps.bump.outputs.new_version }}"
+          # Paketbau auf dem Tag anstoßen (siehe Kopfkommentar)
+          gh workflow run release.yml --ref "v${{ steps.bump.outputs.new_version }}"
+
+      - name: Package and publish
+        if: github.event_name == 'workflow_dispatch'
         uses: BigWigsMods/packager@v2
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}

@@ -8,3 +8,4 @@ ignore:
   - .github
   - curseforge
   - README.md
+  - README.en.md

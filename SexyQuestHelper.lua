@@ -6,7 +6,7 @@
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.13" -- bei jedem Release mit ## Version in der .toc anheben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.13" -- wird vom Release-Workflow zusammen mit ## Version in der .toc angehoben (GetAddOnMetadata fehlt auf Forever)
 local versions = {} -- [name] = Addon-Version des Mitglieds
 local blockedBy = {}      -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied laut seiner Meldung nicht annehmen kann
 local learnedBlocked = {} -- wie blockedBy, aber aus Fehlermeldungen beim Teilen gelernt
