@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.13
+- New fonts: Marcellus for the title, Inter for all other text (bundled, SIL Open Font License). Clients in Russian, Korean and Chinese keep the game font
+
 ## 1.0.12
 - New window design with player cards (class-colored avatar, status label, quest labels, Share button)
 - When the window opens automatically only players with differences are shown; opening it manually with /sqh shows all players

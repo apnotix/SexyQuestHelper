@@ -552,6 +552,30 @@ local function ColoredName(name)
 	return ("|cff%02x%02x%02x%s|r"):format(r * 255, g * 255, b * 255, name)
 end
 
+-- Schriften: Marcellus fuer den Titel, Inter fuer Text (beide SIL OFL, Lizenzen in
+-- media/fonts). Fehlt eine Datei oder braucht die Clientsprache andere Zeichen
+-- (Kyrillisch, Asiatisch), gilt die Spielschrift. SetFont meldet false, wenn die
+-- Datei nicht geladen werden kann.
+local probe = CreateFont("SexyQuestHelperFontProbe")
+local function LoadFont(file)
+	local loc = GetLocale()
+	if loc == "ruRU" or loc == "koKR" or loc == "zhCN" or loc == "zhTW" then return STANDARD_TEXT_FONT end
+	local path = "Interface\\AddOns\\SexyQuestHelper\\media\\fonts\\" .. file
+	if probe:SetFont(path, 12, "") == false then return STANDARD_TEXT_FONT end
+	return path
+end
+
+local function MakeFont(name, file, size, r, g, b)
+	local f = CreateFont(name)
+	f:SetFont(LoadFont(file), size, "")
+	f:SetTextColor(r, g, b)
+	f:SetShadowColor(0, 0, 0, 1)
+	f:SetShadowOffset(1, -1)
+end
+MakeFont("SexyQuestHelperTitle", "Marcellus-Regular.ttf", 14, 0.91, 0.76, 0.42)
+MakeFont("SexyQuestHelperText", "Inter.ttf", 13, 0.95, 0.92, 0.86)
+MakeFont("SexyQuestHelperSmall", "Inter.ttf", 11, 0.95, 0.92, 0.86)
+
 -- Farben der Etiketten (Pillen) und Zeilenhoehen. Entwurf "A: Spielerkarten".
 local HEADER_H, QUEST_H, INFO_H, CARD_GAP, BAND_H = 30, 24, 20, 8, 30
 local TONES = {
@@ -630,7 +654,7 @@ end
 local function MakePill(parent)
 	local pill = {}
 	pill.tex = parent:CreateTexture(nil, "ARTWORK")
-	pill.text = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	pill.text = parent:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
 	pill.text:SetPoint("CENTER", pill.tex, "CENTER", 0, 0)
 	return pill
 end
@@ -675,7 +699,7 @@ local function GetRow(i)
 	row.avatar:SetPoint("LEFT", row, "LEFT", 8, 0)
 	row.status = MakePill(row)
 	row.status.tex:SetPoint("RIGHT", row, "RIGHT", -8, 0)
-	row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	row.name = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperText")
 	row.name:SetPoint("LEFT", row.avatar, "RIGHT", 8, 0)
 	row.name:SetPoint("RIGHT", row.status.tex, "LEFT", -6, 0)
 	row.name:SetJustifyH("LEFT")
@@ -684,7 +708,7 @@ local function GetRow(i)
 	-- Questzeile: Etikett, Name, Teilen-Button
 	row.kind = MakePill(row)
 	row.kind.tex:SetPoint("LEFT", row, "LEFT", 8, 0)
-	row.fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.fs = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
 	row.fs:SetJustifyH("LEFT")
 	row.fs:SetWordWrap(false)
 
@@ -697,7 +721,7 @@ local function GetRow(i)
 	row.share.hl = row.share:CreateTexture(nil, "HIGHLIGHT")
 	row.share.hl:SetAllPoints()
 	row.share.hl:SetColorTexture(1, 1, 1, 0.25)
-	row.share.text = row.share:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.share.text = row.share:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
 	row.share.text:SetAllPoints()
 	row.share.text:SetText(T("Teilen", "Share"))
 	row.share:RegisterForClicks("LeftButtonUp")
@@ -803,7 +827,7 @@ local function CreateUI()
 	f.band:SetHeight(BAND_H - 3)
 	f.band:SetColorTexture(0.15, 0.12, 0.07, 1)
 
-	f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	f.title = f:CreateFontString(nil, "OVERLAY", "SexyQuestHelperTitle")
 	f.title:SetPoint("TOPLEFT", 12, -9)
 	f.title:SetText("SexyQuestHelper")
 	-- Gebiet als Badge ganz rechts in der Titelleiste (links vom Schliessen-Kreuz)
@@ -811,7 +835,7 @@ local function CreateUI()
 	f.zoneBg:SetPoint("TOPRIGHT", f, "TOPRIGHT", -30, -7)
 	f.zoneBg:SetHeight(18)
 	f.zoneBg:SetColorTexture(0.165, 0.14, 0.10, 1)
-	f.zone = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	f.zone = f:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
 	f.zone:SetPoint("CENTER", f.zoneBg, "CENTER", 0, 0)
 	f.zone:SetTextColor(0.78, 0.73, 0.64)
 	f.zone:SetWordWrap(false)
