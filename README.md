@@ -25,6 +25,8 @@ Vergleicht die Quests deines aktuellen Gebiets mit allen Gruppenmitgliedern, die
 - 🗺️ **Gebietsbezogen:** Verglichen werden nur Quests deines aktuellen Gebiets. Das Gebiet steht als Badge im Titelband. Der Vergleich nutzt die Karten-ID statt des Namens und klappt deshalb auch zwischen Clients in verschiedenen Sprachen.
 - 🔄 **Versionen im Blick:** `/sqh version` zeigt, wer welche Addon-Version nutzt und ob sie aktuell ist.
 - 🎨 **Einheitlicher Look:** dunkelbraune Fläche, Goldrand, Titelband mit Gebiets-Badge. Schrift: **Marcellus** für den Titel, **Inter** für den übrigen Text (mitgeliefert, SIL Open Font License).
+- ⚙️ **Einstellbar im Edit Mode:** Verzögerung bis zum Erscheinen, automatisch schließen, Ton, Hinweis im Chat, Gebiet im Titel ausblenden.
+- 🛡️ **Teilen im Kampf nicht möglich:** Der Teilen-Knopf ist dann grau und trägt den Hinweis „Kampf“.
 - 🖱️ **Verschiebbar:** Ziehe das Fenster, wohin du willst, oder stelle es im **Edit Mode** ein (Position, Größe 50–200 %, Sichtbarkeit; dort zeigt es Beispieldaten). Die Position wird gespeichert. Schließt du es, kommt es erst bei neuen Unterschieden zurück.
 - 🌍 **Deutsch und Englisch.**
 - 🪶 **Leicht:** keine Bibliotheken, Addon-Nachrichten nur bei Änderungen.

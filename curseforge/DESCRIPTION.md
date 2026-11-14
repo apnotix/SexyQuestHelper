@@ -1,39 +1,62 @@
 # SexyQuestHelper
 
+![WoW Forever](https://img.shields.io/badge/WoW-Forever-e8c26a?style=for-the-badge) ![WoW Retail](https://img.shields.io/badge/WoW-Retail-c8a24a?style=for-the-badge) ![Interface](https://img.shields.io/badge/Interface-120100%20%7C%2016001-3b2b12?style=for-the-badge)
+
 **Does your whole group have the same quests? Find out at a glance.**
 
-SexyQuestHelper compares the quests of the zone you are currently in with every party or raid member who also runs the addon. As soon as someone is missing a quest (or has one you don't), a small window pops up and shows exactly what differs. If everyone is in sync, it stays out of your way.
+SexyQuestHelper compares the quests of your current zone with every party or raid member who also runs the addon. As soon as someone lacks a quest (or has one you don't), a small window shows exactly what differs. When everyone is in sync, it stays out of your way.
 
-Works on **World of Warcraft: Forever** and **Retail**.
+Works on **World of Warcraft: Forever** and **Retail**. Styled like the other Sexy addons: dark brown panel, gold frame, title band with the zone as badge.
 
 ## Features
 
-- **Only shows up when it matters** - the window appears automatically when quests differ and hides itself when everyone is in sync.
-- **Clear differences per player** - for each group member you see which quests *you lack* and which quests *they lack*.
-- **Quest tooltips** - hover a quest to see its tooltip.
-- **Click to jump** - click a quest to open it in your quest log. Shift-click inserts a quest link into the chat.
-- **Zone based** - only quests of your current zone are compared, so you don't get flooded.
-- **Lightweight** - no library dependencies, tiny addon message traffic (only sent when something changes).
-- **Movable window** - drag it wherever you like, the position is saved. Close it to dismiss the current differences; it returns when they change.
-- **English and German** localization.
+- 🔔 **Shows up when it matters** - the window opens when quests differ and closes when everyone is in sync. Close it to dismiss the current differences; it returns when they change.
+- 👥 **Differences per player** - which quests *you lack* and which *they lack*.
+- 📜 **Quest tooltips and links** - hover for the tooltip, click to open the quest in your log, Shift-click to link it in chat.
+- 🤝 **Share button** - share a quest with the group right from the list (greyed out in combat).
+- 🗺️ **Zone based** - only the quests of your current zone are compared.
+- 🪶 **Light** - no dependencies, addon messages only when something changes.
 
-## How it works
+## Edit Mode
 
-Every player running the addon sends the quest IDs of the current zone to the group over hidden addon messages. Each client compares its own list with the received ones. Group members without the addon are shown as "no addon / no data". Only players who have SexyQuestHelper installed can be compared.
+Move and scale the window in Edit Mode (it shows sample data there), or simply drag it. Settings:
 
-## Slash commands
+- Delay before the window appears (1 - 10 s)
+- Close automatically after 0 - 60 s
+- Sound when the window appears
+- Chat note about what is missing
+- Hide the zone in the title
+- Size (50 - 200 %) and visibility (hide, hide in combat, mouseover)
+
+## Commands
 
 | Command | Description |
 |---|---|
-| `/sqh` | Show or hide the window (also when there are no differences) |
+| `/sqh` | Show or hide the window |
 | `/sqh refresh` | Re-scan your quest log and re-send it to the group |
 | `/sqh test` | Toggle a simulated group member to preview the display |
-| `/sqh version` | Show the addon version of every group member and whether they are up to date |
-| `/sqh check <questID>` | Show whether you can accept a quest and its prerequisite data (needs the QuestieDB addon) |
-| `/sqh debug` | Print diagnostics (detected zone, quests, addon message counters) |
+| `/sqh version` | Show every group member's addon version |
+
+Long form: `/sexyquesthelper`
 
 ## Notes
 
-- Every group member needs the addon to be compared.
-- Quests are matched by the quest log category that has the same name as your current zone.
-- Please report bugs and feedback via the issue tracker.
+- Every group member needs the addon to be compared; others show as "no addon / no data".
+- After a login or reload the window waits about 10 seconds and syncs again before it opens by itself.
+- Fonts: Marcellus and Inter are bundled (SIL Open Font License).
+- Bug reports and ideas are welcome on GitHub.
+
+## Credits
+
+The own SexyEditMode library (embedded). Fonts: Marcellus and Inter (SIL Open Font License 1.1).
+
+## 🇩🇪 Deutsch
+
+**SexyQuestHelper** vergleicht die Quests deines Gebiets mit allen Gruppenmitgliedern, die das Addon nutzen, und zeigt, was abweicht.
+
+- Fenster erscheint nur bei Unterschieden, Quests per Klick im Questlog öffnen oder in den Chat verlinken
+- Quest mit einem Klick teilen (nicht im Kampf)
+- Im Edit Mode platzierbar, mit Einstellungen für Verzögerung, automatisches Schließen, Ton und Chat-Hinweis
+- Funktioniert auf Deutsch und Englisch
+
+Ausführliche deutsche Beschreibung: https://github.com/apnotix/SexyQuestHelper
