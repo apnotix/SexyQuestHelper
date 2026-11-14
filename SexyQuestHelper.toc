@@ -11,4 +11,7 @@
 ## OptionalDeps: QuestieDB
 ## SavedVariables: SexyQuestHelperDB
 
+lib\LibStub\LibStub.lua
+lib\SexyEditMode\SexyEditMode.lua
+
 SexyQuestHelper.lua

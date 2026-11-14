@@ -16,9 +16,20 @@ local DIFF_SETTLE = 4       -- Sekunden, die ein Unterschied bestehen muss, bevo
 local IGNORE_AFTER_SCAN = 2 -- Sekunden, in denen eigene Auf-/Zuklapp-Events ignoriert werden
 local CHUNK_SIZE = 200      -- Zeichen Quest-IDs pro Nachricht (Limit: 255 inkl. Header)
 
+-- Einstellungen (Edit Mode); gespeichert wird nur, was vom Standard abweicht
+local DEFAULTS = {
+	settleDelay = DIFF_SETTLE, -- Sekunden, die ein Unterschied bestehen muss, bevor das Fenster erscheint
+	autoClose = 0,             -- Sekunden bis das Fenster von selbst zugeht (0 = aus)
+	sound = false,             -- Ton beim Erscheinen
+	chatNotice = false,        -- Hinweis im Chat, was fehlt
+	hideZone = false,          -- Gebiets-Etikett im Titel ausblenden
+}
+local cfg = setmetatable({}, { __index = DEFAULTS })
+
 local isDE = GetLocale() == "deDE"
 local function T(de, en) return isDE and de or en end
 
+local SEM = LibStub("SexyEditMode-1.0")
 local frame = CreateFrame("Frame")
 local ui                      -- Anzeigefenster (lazy)
 local myZone, myZoneKey, myIds, myTitles = "", "", {}, {} -- myZone: lokaler Name, myZoneKey: sprachunabhaengiger Vergleichsschluessel
@@ -365,7 +376,10 @@ end
 local WIDTH = 376
 local pendingSig, pendingSince -- noch nicht angezeigter Unterschied und seit wann er besteht
 local forceShow = false     -- per /sqh erzwungen (auch ohne Unterschiede)
+local SetTestMode           -- schaltet das simulierte Gruppenmitglied (/sqh test, Edit Mode)
+local editPreview = false   -- Testdaten laufen nur wegen des Edit Mode
 local dismissedSig = nil    -- Unterschiede, die der Nutzer weggeklickt hat
+local scanReady = false     -- erst nach dem Login-Abgleich (siehe PLAYER_LOGIN) darf das Fenster von selbst aufgehen
 local rowPool = {}
 local requested = {}
 
@@ -407,7 +421,30 @@ end
 
 local lastShare -- { id, t }: zuletzt geteilte Quest, um Fehlermeldungen zuzuordnen
 
+-- Im Kampf lassen sich Quests nicht teilen: Der Knopf ist dann grau und wirkungslos
+local function InCombat() return InCombatLockdown() or UnitAffectingCombat("player") end
+
+local function UpdateShareButton(btn)
+	local off = InCombat() and true or false
+	btn.disabled = off
+	if off then
+		btn.bg:SetColorTexture(0.2, 0.18, 0.15, 1)
+		btn.text:SetTextColor(0.5, 0.47, 0.42)
+		btn.text:SetText(T("Kampf", "Combat")) -- Hinweis, warum der Knopf aus ist
+		btn.hl:Hide()
+	else
+		btn.bg:SetColorTexture(0.184, 0.42, 0.235, 1)
+		btn.text:SetTextColor(1, 1, 1)
+		btn.text:SetText(T("Teilen", "Share"))
+		btn.hl:Show()
+	end
+end
+
 local function ShareQuest(id)
+	if InCombat() then
+		print("SexyQuestHelper: " .. T("Im Kampf kann nicht geteilt werden.", "Cannot share while in combat."))
+		return
+	end
 	local index = QuestLogIndex(id)
 	if not index then return end
 	if C_QuestLog and C_QuestLog.SetSelectedQuest then
@@ -728,6 +765,13 @@ local function GetRow(i)
 	row.share:SetScript("OnClick", function()
 		if row.questId then ShareQuest(row.questId) end
 	end)
+	row.share:SetScript("OnEnter", function(self)
+		if not self.disabled then return end
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText(T("Im Kampf nicht möglich", "Not possible in combat"))
+		GameTooltip:Show()
+	end)
+	row.share:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	row.share:Hide()
 
 	row:SetScript("OnEnter", function(self)
@@ -788,6 +832,7 @@ local function ConfigureRow(row, e)
 		row.fs:SetPoint("RIGHT", row, "RIGHT", -8, 0)
 	end
 	row.share:SetShown(e.share and true or false)
+	UpdateShareButton(row.share)
 end
 
 local function CreateUI()
@@ -807,18 +852,36 @@ local function CreateUI()
 	f:SetBackdropColor(0.08, 0.065, 0.05, 0.96)
 	f:SetBackdropBorderColor(0.42, 0.34, 0.15, 1)
 
-	local pos = SexyQuestHelperDB.pos
-	if pos then
-		f:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
-	else
-		f:SetPoint("CENTER", UIParent, "CENTER", 0, 200)
+	-- Position: SexyEditMode speichert die untere linke Ecke in SexyQuestHelperDB.editMode.
+	-- Eine frühere Position (SexyQuestHelperDB.pos, beliebiger Ankerpunkt) wird einmalig umgerechnet,
+	-- wobei die Oberkante gleich bleibt (Fensterhöhe damals unbekannt: Starthöhe 60).
+	local db = SexyQuestHelperDB.editMode
+	if not db then
+		db = {}
+		SexyQuestHelperDB.editMode = db
+		local screenW, screenH = UIParent:GetWidth(), UIParent:GetHeight()
+		local pos = SexyQuestHelperDB.pos
+		if pos and pos.point then
+			local relPoint = pos.relPoint or pos.point
+			local ax = relPoint:find("LEFT") and 0 or (relPoint:find("RIGHT") and screenW or screenW / 2)
+			local ay = relPoint:find("BOTTOM") and 0 or (relPoint:find("TOP") and screenH or screenH / 2)
+			local ox = pos.point:find("LEFT") and 0 or (pos.point:find("RIGHT") and WIDTH or WIDTH / 2)
+			local oy = pos.point:find("BOTTOM") and 0 or (pos.point:find("TOP") and 60 or 30)
+			db.x, db.y = ax + (pos.x or 0) - ox, ay + (pos.y or 0) - oy
+		else
+			db.x, db.y = (screenW - WIDTH) / 2, screenH / 2 + 200 - 30
+		end
+		db.anchoredHeight = 60
+		SexyQuestHelperDB.pos = nil
 	end
+	f:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", db.x, db.y)
 
+	-- Das Fenster bleibt jederzeit ziehbar; gespeichert wird über die Bibliothek
 	f:SetScript("OnDragStart", f.StartMoving)
 	f:SetScript("OnDragStop", function(self)
 		self:StopMovingOrSizing()
-		local point, _, relPoint, x, y = self:GetPoint()
-		SexyQuestHelperDB.pos = { point = point, relPoint = relPoint, x = x, y = y }
+		SEM:SetPosition(self, self:GetLeft(), self:GetBottom())
+		db.anchoredHeight = self:GetHeight()
 	end)
 
 	f.band = f:CreateTexture(nil, "BACKGROUND")
@@ -849,7 +912,86 @@ local function CreateUI()
 	end)
 
 	f:Hide()
+
+	-- Edit Mode: Position, Größe und Sichtbarkeit; im Edit Mode zeigt das Fenster Beispieldaten
+	SEM:Register(f, {
+		name = "SexyQuestHelper",
+		db = db,
+		settings = {
+			{ type = "header", name = T("Erscheinen", "Appearing"), id = "appear" },
+			{ type = "slider", name = T("Verzögerung bis zum Erscheinen", "Delay before appearing"),
+				min = 1, max = 10, step = 1,
+				get = function() return cfg.settleDelay end,
+				set = function(v) cfg.settleDelay = v end,
+				format = function(v) return v .. " s" end },
+			{ type = "slider", name = T("Automatisch schließen nach", "Close automatically after"),
+				min = 0, max = 60, step = 5,
+				get = function() return cfg.autoClose end,
+				set = function(v) cfg.autoClose = v end,
+				format = function(v) return v == 0 and T("Aus", "Off") or (v .. " s") end },
+			{ type = "check", name = T("Ton beim Erscheinen", "Sound when appearing"),
+				get = function() return cfg.sound end,
+				set = function(v) cfg.sound = v and true or false end },
+			{ type = "check", name = T("Hinweis im Chat, was fehlt", "Chat note about what is missing"),
+				get = function() return cfg.chatNotice end,
+				set = function(v) cfg.chatNotice = v and true or false end },
+			{ type = "header", name = T("Darstellung", "Look"), id = "look", collapsed = true },
+			{ type = "check", name = T("Gebiet im Titel ausblenden", "Hide the zone in the title"),
+				get = function() return cfg.hideZone end,
+				set = function(v) cfg.hideZone = v and true or false; Refresh() end },
+		},
+		onMoved = function(self) db.anchoredHeight = self:GetHeight() end,
+		onEditMode = function(active)
+			if active then
+				if not testMode then
+					editPreview = true
+					SetTestMode(true)
+				end
+			elseif editPreview then
+				editPreview = false
+				SetTestMode(false)
+			end
+		end,
+	})
 	return f
+end
+
+-- Das Fenster ging wegen Unterschieden von selbst auf (nicht per /sqh, nicht im Edit Mode)
+local closeGen = 0
+local function OnAutoOpen(entries)
+	if cfg.sound then
+		pcall(PlaySound, (SOUNDKIT and SOUNDKIT.IG_QUEST_LIST_OPEN) or 882)
+	end
+	if cfg.chatNotice then
+		local name, lack, they
+		local function Flush()
+			if not name then return end
+			local parts = {}
+			if #lack > 0 then parts[#parts + 1] = T("Dir fehlt: ", "You lack: ") .. table.concat(lack, ", ") end
+			if #they > 0 then parts[#parts + 1] = T("Hat nicht: ", "Lacks: ") .. table.concat(they, ", ") end
+			print("|cffe8c26aSexyQuestHelper|r " .. name .. " - " .. table.concat(parts, "; "))
+		end
+		for _, e in ipairs(entries) do
+			if e.kind == "header" then
+				Flush()
+				if e.tone == "warn" then name, lack, they = e.name, {}, {} else name = nil end
+			elseif e.kind == "quest" and name then
+				local list = (e.tone == "lack") and lack or they
+				list[#list + 1] = QuestName(e.id)
+			end
+		end
+		Flush()
+	end
+	if cfg.autoClose > 0 then
+		closeGen = closeGen + 1
+		local mine = closeGen
+		C_Timer.After(cfg.autoClose, function()
+			if mine == closeGen and ui and ui:IsShown() and not forceShow then
+				dismissedSig = ui.sig -- wie beim Schließen per Kreuz: erst bei neuen Unterschieden wieder
+				ui:Hide()
+			end
+		end)
+	end
 end
 
 function Refresh()
@@ -864,9 +1006,9 @@ function Refresh()
 	if hasDiff then
 		if sig ~= pendingSig then
 			pendingSig, pendingSince = sig, GetTime()
-			C_Timer.After(DIFF_SETTLE + 0.2, function() Refresh() end)
+			C_Timer.After(cfg.settleDelay + 0.2, function() Refresh() end)
 		end
-		visibleDiff = (GetTime() - pendingSince >= DIFF_SETTLE) and sig ~= dismissedSig
+		visibleDiff = scanReady and (GetTime() - pendingSince >= cfg.settleDelay) and sig ~= dismissedSig
 	else
 		pendingSig = nil
 	end
@@ -881,6 +1023,8 @@ function Refresh()
 	local zoneWidth = math.min(ui.zone:GetStringWidth(), 150)
 	ui.zone:SetWidth(zoneWidth)
 	ui.zoneBg:SetWidth(zoneWidth + 18)
+	ui.zone:SetShown(not cfg.hideZone)
+	ui.zoneBg:SetShown(not cfg.hideZone)
 
 	local y = BAND_H + 8
 	for i, e in ipairs(entries) do
@@ -896,8 +1040,18 @@ function Refresh()
 	end
 	for i = #entries + 1, #rowPool do rowPool[i]:Hide() end
 
-	ui:SetHeight(y + 12)
+	-- Die Oberkante bleibt stehen: gespeichert ist die untere Kante, bezogen auf die Höhe,
+	-- bei der sie gesetzt wurde (db.anchoredHeight, überdauert /reload)
+	local newHeight = y + 12
+	local db = SexyQuestHelperDB.editMode
+	if db and db.x and db.y and not SEM:IsMoving(ui) then
+		SEM:SetPosition(ui, db.x, db.y - (newHeight - (db.anchoredHeight or newHeight)))
+		db.anchoredHeight = newHeight
+	end
+	ui:SetHeight(newHeight)
+	local wasShown = ui:IsShown()
 	ui:Show()
+	if not wasShown and not forceShow then OnAutoOpen(entries) end
 end
 
 ---------------------------------------------------------------------------
@@ -952,12 +1106,17 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		-- echte Aenderungen: immer scannen (QUEST_LOG_UPDATE wird nach einem Scan kurz
 		-- ignoriert und koennte sonst eine gleich danach angenommene Quest verschlucken)
 		QueueScan(false)
+	elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
+		-- Kampf beginnt/endet: Teilen-Knöpfe sofort ein- bzw. ausschalten
+		for _, row in ipairs(rowPool) do UpdateShareButton(row.share) end
 	elseif event == "GROUP_ROSTER_UPDATE" then
 		PruneMembers()
 		QueueScan(true) -- neue Mitglieder brauchen unsere Liste
 		Refresh()
 	elseif event == "PLAYER_LOGIN" then
 		SexyQuestHelperDB = SexyQuestHelperDB or {}
+		SexyQuestHelperDB.cfg = SexyQuestHelperDB.cfg or {}
+		cfg = setmetatable(SexyQuestHelperDB.cfg, { __index = DEFAULTS })
 		ui = CreateUI() -- zuerst, damit /sqh auch bei spaeteren Fehlern funktioniert
 		local register = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or RegisterAddonMessagePrefix
 		local regOk, regResult = pcall(register, PREFIX)
@@ -975,19 +1134,48 @@ frame:SetScript("OnEvent", function(_, event, ...)
 			end
 		end)
 		QueueScan(true)
+		-- Direkt nach Login/Reload ist das Questlog oft noch unvollständig, das Gebiet unbekannt:
+		-- die eigene Liste wäre zu klein und das Fenster meldete "Dir fehlt ..." fälschlich. Darum
+		-- wird später nochmal gescannt und mit allen abgeglichen (Meldungen werden neu gesendet und
+		-- angefragt); bis dahin geht das Fenster nicht von selbst auf.
+		C_Timer.After(4, function() QueueScan(true) end)
+		C_Timer.After(10, function()
+			scanReady = true
+			QueueScan(true)
+		end)
 	else -- Zonenwechsel, Betreten der Welt
 		QueueScan(true)
 	end
 end)
 
 for _, e in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "QUEST_LOG_UPDATE",
-	"GROUP_ROSTER_UPDATE", "CHAT_MSG_ADDON", "CHAT_MSG_SYSTEM" }) do
+	"GROUP_ROSTER_UPDATE", "CHAT_MSG_ADDON", "CHAT_MSG_SYSTEM", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }) do
 	frame:RegisterEvent(e)
 end
 for _, e in ipairs({ "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_TURNED_IN" }) do
 	pcall(frame.RegisterEvent, frame, e) -- nicht in jedem Client vorhanden
 end
 pcall(frame.RegisterEvent, frame, "QUEST_DATA_LOAD_RESULT") -- nicht in jedem Client vorhanden
+
+-- Testmodus: simuliertes Gruppenmitglied (/sqh test und Vorschau im Edit Mode)
+function SetTestMode(on)
+	testMode = on and true or false
+	if testMode then
+		-- Fake-Mitglied: gleiche Zone, eine deiner Quests fehlt, dafuer eine fremde
+		local ids = {}
+		local skipped = false
+		for _, id in ipairs(SortedIds(myIds)) do
+			if skipped then ids[id] = true else skipped = true end
+		end
+		ids[999999] = true
+		members.Testmate = { zone = myZoneKey, ids = ids }
+		versions.Testmate = VERSION
+	else
+		members.Testmate = nil
+	end
+	forceShow = testMode
+	Refresh()
+end
 
 SLASH_SEXYQUESTHELPER1 = "/sqh"
 SLASH_SEXYQUESTHELPER2 = "/sexyquesthelper"
@@ -998,22 +1186,8 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 	end
 	arg = (arg or ""):lower()
 	if arg == "test" then
-		testMode = not testMode
-		if testMode then
-			-- Fake-Mitglied: gleiche Zone, eine deiner Quests fehlt, dafuer eine fremde
-			local ids = {}
-			local skipped = false
-			for _, id in ipairs(SortedIds(myIds)) do
-				if skipped then ids[id] = true else skipped = true end
-			end
-			ids[999999] = true
-			members.Testmate = { zone = myZoneKey, ids = ids }
-			versions.Testmate = VERSION
-		else
-			members.Testmate = nil
-		end
-		forceShow = testMode
-		Refresh()
+		editPreview = false
+		SetTestMode(not testMode)
 		return
 	end
 	if arg == "debug" or arg == "debug log" then

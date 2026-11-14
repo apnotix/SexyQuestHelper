@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.14
+- After a login or /reload the window no longer reports "You lack ..." for quests you already have: the quest log is still incomplete right then, so the window waits about 10 s and syncs with the group again (re-scan, resend, re-request) before it may open on its own
+- New options in the Edit Mode dialog: delay before the window appears (1-10 s, was fixed 4 s), close automatically after 0-60 s, sound when appearing, chat note about what is missing, hide the zone in the title
+- In combat the Share button is greyed out and reads "Combat" (hover for a hint); it re-enables when the fight ends
+- Edit Mode: The window can now be selected, moved and scaled in Edit Mode (dialog with "Position and size" and "Visibility" from the own SexyEditMode library) and shows sample data while editing. The saved position is carried over; dragging the window still works anytime. The top edge stays put when the window grows.
+
 ## 1.0.13
 - New fonts: Marcellus for the title, Inter for all other text (bundled, SIL Open Font License). Clients in Russian, Korean and Chinese keep the game font
 
