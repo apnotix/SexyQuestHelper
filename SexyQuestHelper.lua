@@ -1288,7 +1288,8 @@ end
 -- jedes Ziel eine kleine Zeile mit Kästchen, Text, Etikett mit dem Stand und einem Fortschrittsbalken
 ---------------------------------------------------------------------------
 
-local GOAL_H = 25   -- Höhe je Ziel
+local GOAL_H = 25   -- Mindesthöhe je Ziel (eine Textzeile); lange Ziele brechen um und werden höher
+local GOAL_TEXT_X = 33  -- linker Rand des Zieltexts (Kästchen 14 + 13 + 6)
 
 local function HasQuestieDB()
 	return _G.QuestDB and _G.NpcDB and _G.ObjectDB and _G.ItemDB
@@ -1303,18 +1304,18 @@ local function GetGoal(row, j)
 	g:SetHeight(GOAL_H)
 	g.icon = g:CreateTexture(nil, "ARTWORK")
 	g.icon:SetSize(13, 13)
-	-- Text, Kästchen und Etikett sitzen etwas über der Mitte, damit der Balken darunter Abstand hat
-	g.icon:SetPoint("LEFT", g, "LEFT", 14, 4)
+	-- Kästchen, Text und Etikett hängen oben, damit lange Ziele nach unten umbrechen und der Balken darunter Abstand hat
+	g.icon:SetPoint("TOPLEFT", g, "TOPLEFT", 14, -4)
 	g.pill = MakePill(g)
-	g.pill.tex:SetPoint("RIGHT", g, "RIGHT", -8, 4)
+	g.pill.tex:SetPoint("TOPRIGHT", g, "TOPRIGHT", -8, -3)
 	g.text = g:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
-	g.text:SetPoint("LEFT", g.icon, "RIGHT", 6, 0)
-	g.text:SetPoint("RIGHT", g.pill.tex, "LEFT", -6, 0)
+	g.text:SetPoint("TOPLEFT", g, "TOPLEFT", GOAL_TEXT_X, -5)
 	g.text:SetJustifyH("LEFT")
-	g.text:SetWordWrap(false)
+	g.text:SetJustifyV("TOP")
+	g.text:SetWordWrap(true)
 	-- Fortschrittsbalken unter dem Ziel, wie im Fenster "Mitspielern helfen"
 	g.barBg = g:CreateTexture(nil, "BORDER")
-	g.barBg:SetPoint("BOTTOMLEFT", g, "BOTTOMLEFT", 33, 3)
+	g.barBg:SetPoint("BOTTOMLEFT", g, "BOTTOMLEFT", GOAL_TEXT_X, 3)
 	g.barBg:SetPoint("BOTTOMRIGHT", g, "BOTTOMRIGHT", -8, 3)
 	g.barBg:SetHeight(3)
 	g.barBg:SetColorTexture(0.21, 0.19, 0.14, 1)
@@ -1389,13 +1390,19 @@ local function GoalList(id, objs, data)
 	return goals
 end
 
--- Zeigt die Ziele einer Quest in der Zeile row ab dem Abstand top (Pixel von oben) und gibt die belegte Höhe zurück
+-- Zeigt die Ziele einer Quest in der Zeile row ab dem Abstand top (Pixel von oben) und gibt die belegte Höhe zurück.
+-- Der Zieltext hat eine feste Breite (bis vor das Etikett) und bricht um, statt über den Fensterrand zu laufen.
 local function RenderGoals(row, goals, top)
+	local y = top
 	for j, goal in ipairs(goals) do
 		local g = GetGoal(row, j)
+		g.text:SetWidth(WIDTH - 24 - GOAL_TEXT_X - 8 - (goal.count and (38 + 6) or 0))
+		g.text:SetText(goal.name)
+		local h = math.max(GOAL_H, math.ceil(g.text:GetStringHeight()) + 14)
 		g:ClearAllPoints()
-		g:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -(top + (j - 1) * GOAL_H))
-		g:SetSize(WIDTH - 24, GOAL_H)
+		g:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -y)
+		g:SetSize(WIDTH - 24, h)
+		y = y + h
 
 		if goal.done then
 			g.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
@@ -1407,13 +1414,11 @@ local function RenderGoals(row, goals, top)
 			g.text:SetTextColor(goal.hint and 0.61 or 0.9, goal.hint and 0.57 or 0.87, goal.hint and 0.5 or 0.78)
 		end
 
-		g.text:SetText(goal.name)
-
 		if goal.count then
 			SetPill(g.pill, goal.done and "ok" or "warn", goal.count, 38, 14)
 			g.barBg:Show()
 			g.bar:Show()
-			g.bar:SetWidth(math.max(1, (WIDTH - 24 - 33 - 8) * (goal.frac or 0)))
+			g.bar:SetWidth(math.max(1, (WIDTH - 24 - GOAL_TEXT_X - 8) * (goal.frac or 0)))
 			if goal.done then g.bar:SetColorTexture(0.30, 0.76, 0.42, 1) else g.bar:SetColorTexture(0.94, 0.75, 0.29, 1) end
 		else
 			HidePill(g.pill)
@@ -1426,7 +1431,7 @@ local function RenderGoals(row, goals, top)
 
 	for j = #goals + 1, #row.goals do row.goals[j]:Hide() end
 
-	return #goals * GOAL_H
+	return y - top
 end
 
 local HELP_ROW_H, HELP_HEAD_H = 26, 28   -- Questzeile, Kopfzeile
@@ -1600,6 +1605,7 @@ local function HelpGoals(e)
 	return goals
 end
 
+-- Richtet die Zeile ein und gibt ihre Höhe zurück (Questtitel und Ziele brechen um)
 local function ConfigureHelpRow(row, e, goals)
 	local isHeader, isQuest = e.kind == "header", e.kind == "quest"
 	row.bg:SetShown(e.kind ~= "info")
@@ -1632,7 +1638,9 @@ local function ConfigureHelpRow(row, e, goals)
 		row.fs:SetFontObject("SexyQuestHelperText")
 		row.fs:ClearAllPoints()
 		row.fs:SetPoint("TOPLEFT", row, "TOPLEFT", 10, -6)
-		row.fs:SetWidth(WIDTH - 24 - 28 - 72)
+		row.fs:SetWidth(WIDTH - 24 - 10 - 60 - 8 - 6)
+		row.fs:SetWordWrap(true)
+		row.fs:SetJustifyV("TOP")
 		row.fs:SetText(e.title or QuestName(e.id))
 		row.fs:SetTextColor(0.95, 0.92, 0.86)
 		row.accent:SetColorTexture(e.ready and 0.30 or 0.94, e.ready and 0.76 or 0.75, e.ready and 0.42 or 0.29, 1)
@@ -1645,17 +1653,21 @@ local function ConfigureHelpRow(row, e, goals)
 			SetPill(row.pill, "grey", "?", 60, 16)
 		end
 
-		RenderGoals(row, goals or {}, HELP_ROW_H - 2)
+		local top = math.max(HELP_ROW_H, math.ceil(row.fs:GetStringHeight()) + 12)
+		local gh = RenderGoals(row, goals or {}, top - 2)
+		return gh > 0 and (top + 4 + gh + 4) or top
 	else
 		row.fs:SetFontObject("SexyQuestHelperSmall")
 		row.fs:ClearAllPoints()
-		row.fs:SetWidth(0)
 		row.fs:SetPoint("LEFT", row, "LEFT", 8, 0)
-		row.fs:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+		row.fs:SetWidth(WIDTH - 24 - 16)
+		row.fs:SetWordWrap(true)
 		row.fs:SetText("|cff9b9180" .. e.text .. "|r")
 		HidePill(row.pill)
 		for _, g2 in ipairs(row.goals) do g2:Hide() end
+		return math.max(INFO_H, math.ceil(row.fs:GetStringHeight()) + 6)
 	end
+	return HELP_HEAD_H
 end
 
 local function CreateHelpUI()
@@ -1751,14 +1763,13 @@ function RefreshHelp()
 	for i, e in ipairs(entries) do
 		local row = GetHelpRow(i)
 		local goals = e.kind == "quest" and HelpGoals(e) or nil
-		local h = (e.kind == "header" and HELP_HEAD_H) or (e.kind == "quest" and HELP_ROW_H) or INFO_H
-		if goals and #goals > 0 then h = HELP_ROW_H + 4 + #goals * GOAL_H + 4 end
 		if e.kind == "header" and i > 1 then y = y + CARD_GAP end
 		row:ClearAllPoints()
 		row:SetPoint("TOPLEFT", helpUI, "TOPLEFT", 12, -y)
-		row:SetSize(WIDTH - 24, h)
-		ConfigureHelpRow(row, e, goals)
+		row:SetWidth(WIDTH - 24)
 		row:Show()
+		local h = ConfigureHelpRow(row, e, goals)
+		row:SetHeight(h)
 		y = y + h
 	end
 	for i = #entries + 1, #helpRows do helpRows[i]:Hide() end
@@ -2180,11 +2191,9 @@ function RefreshNear()
 				if not goal.done then allDone = false end
 			end
 
-			local h = NEAR_ROW_H + ((#goals > 0) and (4 + #goals * GOAL_H) or 0) + 4
-
 			row:ClearAllPoints()
 			row:SetPoint("TOPLEFT", nearUI.content, "TOPLEFT", 12, -y)
-			row:SetSize(WIDTH - 24, h)
+			row:SetWidth(WIDTH - 24)
 			row.bg:Show()
 			row.divider:SetShown(i > 1)
 			row.accent:Show()
@@ -2201,7 +2210,9 @@ function RefreshNear()
 				SetPill(row.pill, "they", math.floor(e.dist + 0.5) .. " m", nil, 16)
 			end
 
-			RenderGoals(row, goals, NEAR_ROW_H - 2)
+			local gh = RenderGoals(row, goals, NEAR_ROW_H - 2)
+			local h = NEAR_ROW_H + ((gh > 0) and (4 + gh) or 0) + 4
+			row:SetHeight(h)
 			row:Show()
 			y = y + h + 2
 		end
