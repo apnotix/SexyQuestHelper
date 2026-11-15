@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- "Quests nearby" on non-English clients (e.g. German): goal areas are now matched to your zone by map ID via Questie's zone data when Questie is loaded, instead of only by the localized zone name; name matching ignores case and stray spaces. `/sqh near debug` also lists the goal areas (ID, name, map) of quests that found no points
+
 ## 1.0.16
 - "Quests nearby": a quest for which QuestieDB knows no real place stays in the list for a few minutes (default 3, 1-10 in the dialog) after its progress rose, wherever you stand, with a grey label showing how long ago; then it disappears. Quests with a known place still follow the range
 - "Help your group" uses the same look as "Quests nearby": every goal a row of its own with check box, state label and a progress bar, a colored stripe per quest; without single goals one bar shows the overall progress
