@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- "Quests nearby": the group members' badges now sit on the right of each goal, directly before your own progress badge, in the same size (quest-level badges in the title, before the distance); the goal text ends before them
 - "Quests nearby": the progress of group members is now shown as small chips in the window's style (class icon plus "3/8", a check mark or "45 %" on a dark pill, gold while open, green when done, grey "?" for members without the addon), aligned under the goal text; hover a chip for the name and the exact state. The "Hidden: N" button now sits in the middle of the title bar
 - "Quests nearby" shows the progress of your group members: under each goal small labels in class color with their state ("Anna 3/8", a check mark when done); members without single goals show percent under the quest title, finished or turned in with a check mark. Members without the addon show a grey "has the quest" when the game knows it (C_QuestLog.IsUnitOnQuest). Uses the data the addon already sends for "Help your group" (no new messages). Can be turned off in the Edit Mode dialog ("Show the progress of group members")
 - "Quests nearby": a small button "Hidden: N" in the header opens a dialog that lists all hidden quests, each with a "Show" button, plus "Show all" (scrolls with the mouse wheel, Esc closes it). It replaces the grey "N hidden" line at the bottom of the window
