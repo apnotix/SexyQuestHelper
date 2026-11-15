@@ -479,6 +479,78 @@ local function QuestLink(id)
 	return ("|cffffff00|Hquest:%d:%d|h[%s]|h|r"):format(id, UnitLevel("player"), QuestName(id))
 end
 
+-- Ausgeblendete Quests (Rechtsklick auf eine Quest in einem der drei Fenster), gespeichert in
+-- SexyQuestHelperDB.nearHidden: [Quest] = Name. Eine Liste für alle Fenster (der Name des Schlüssels stammt aus der
+-- Zeit, als nur "Quests in der Nähe" ausblenden konnte). Der Name wird mitgespeichert, damit die Liste auch Quests
+-- zeigen kann, die nicht mehr im Log sind.
+local function IsQuestHidden(id)
+	local hidden = SexyQuestHelperDB.nearHidden
+	return hidden and hidden[id] ~= nil
+end
+
+local function HiddenCount()
+	local n = 0
+	for _ in pairs(SexyQuestHelperDB.nearHidden or {}) do n = n + 1 end
+	return n
+end
+
+-- Ausgeblendete Quests nach Namen sortiert: { { id, name }, ... }
+local function HiddenList()
+	local list = {}
+	for id, name in pairs(SexyQuestHelperDB.nearHidden or {}) do
+		list[#list + 1] = { id = id, name = myTitles[id] or (type(name) == "string" and name) or QuestName(id) }
+	end
+	table.sort(list, function(a, b) return a.name < b.name end)
+	return list
+end
+
+local function RefreshHiddenDialog()
+	if SEM.dialog and SEM.dialog:IsShown() then SEM:RebuildDialog() end
+end
+
+local function HideQuest(id)
+	if not id then return end
+	GameTooltip:Hide()
+	SexyQuestHelperDB.nearHidden = SexyQuestHelperDB.nearHidden or {}
+	SexyQuestHelperDB.nearHidden[id] = QuestName(id)
+	print("|cffe8c26aSexyQuestHelper|r " .. T("ausgeblendet: ", "hidden: ") .. QuestName(id) .. " |cff9b9180("
+		.. T("wieder einblenden im Edit Mode oder mit /sqh hidden", "show again in Edit Mode or with /sqh hidden") .. ")|r")
+	Refresh()
+	RefreshHiddenDialog()
+end
+
+-- id = nil: alle wieder einblenden
+local function UnhideQuest(id)
+	if id then
+		if SexyQuestHelperDB.nearHidden then SexyQuestHelperDB.nearHidden[id] = nil end
+	else
+		SexyQuestHelperDB.nearHidden = {}
+	end
+	Refresh()
+	RefreshHiddenDialog()
+end
+
+-- Abschnitt "Ausgeblendete Quests" für den Dialog im Edit Mode (in allen drei Fenstern gleich)
+local function HiddenSettings()
+	return { type = "header", name = T("Ausgeblendete Quests", "Hidden quests"), id = "nearHidden" },
+		{ type = "dynamic", build = function()
+			local list = HiddenList()
+			if #list == 0 then
+				return { { type = "divider", key = "sqh-hidden-none",
+					name = T("Keine. Rechtsklick auf eine Quest blendet sie aus.", "None. Right-click a quest to hide it.") } }
+			end
+			local rows = {}
+			for _, h in ipairs(list) do
+				local id = h.id
+				rows[#rows + 1] = { type = "button", key = "sqh-unhide-" .. id .. "-" .. h.name,
+					name = T("Einblenden: ", "Show: ") .. h.name, onClick = function() UnhideQuest(id) end }
+			end
+			rows[#rows + 1] = { type = "button", key = "sqh-unhide-all",
+				name = T("Alle wieder einblenden", "Show all again"), onClick = function() UnhideQuest(nil) end }
+			return rows
+		end }
+end
+
 local function QuestLogIndex(id)
 	local index = (C_QuestLog and C_QuestLog.GetLogIndexForQuestID and C_QuestLog.GetLogIndexForQuestID(id))
 		or (GetQuestLogIndexByID and GetQuestLogIndexByID(id))
@@ -790,11 +862,11 @@ local function BuildEntries(showAll)
 					local theirDone = completedBy[name]
 					for id in pairs(m.ids) do
 						-- hat er, ich nicht - aber ich habe sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
-						if not myIds[id] and not IsDone(id) and CanAccept(id) then iLack[#iLack + 1] = id end
+						if not myIds[id] and not IsDone(id) and CanAccept(id) and not IsQuestHidden(id) then iLack[#iLack + 1] = id end
 					end
 					for id in pairs(myIds) do
 						-- habe ich, er nicht - aber er hat sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
-						if not m.ids[id] and not (theirDone and theirDone[id])
+						if not m.ids[id] and not (theirDone and theirDone[id]) and not IsQuestHidden(id)
 							and not (blockedBy[name] and blockedBy[name][id])
 							and not (learnedBlocked[name] and learnedBlocked[name][id]) then
 							theyLack[#theyLack + 1] = id
@@ -857,7 +929,7 @@ local function GetRow(i)
 	if row then return row end
 
 	row = CreateFrame("Button", nil, ui)
-	row:RegisterForClicks("LeftButtonUp")
+	row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
 	row.bg = row:CreateTexture(nil, "BACKGROUND")
 	row.bg:SetAllPoints()
@@ -925,11 +997,17 @@ local function GetRow(i)
 		end
 		GameTooltip:AddLine(T("Klick: im Questlog öffnen", "Click: open in quest log"), 0.6, 0.6, 0.6)
 		GameTooltip:AddLine(T("Shift-Klick: Link in den Chat", "Shift-click: link into chat"), 0.6, 0.6, 0.6)
+		GameTooltip:AddLine(T("Rechtsklick: ausblenden", "Right-click: hide"), 0.6, 0.6, 0.6)
 		GameTooltip:Show()
 	end)
 	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	row:SetScript("OnClick", function(self)
-		if self.questId then OpenQuest(self.questId) end
+	row:SetScript("OnClick", function(self, button)
+		if not self.questId then return end
+		if button == "RightButton" then
+			if not testMode then HideQuest(self.questId) end
+		else
+			OpenQuest(self.questId)
+		end
 	end)
 
 	rowPool[i] = row
@@ -1085,6 +1163,7 @@ local function CreateUI()
 			{ type = "check", name = T("Gebiet im Titel ausblenden", "Hide the zone in the title"),
 				get = function() return cfg.hideZone end,
 				set = function(v) cfg.hideZone = v and true or false; Refresh() end },
+			HiddenSettings(),
 		},
 		onMoved = function(self) db.anchoredHeight = self:GetHeight() end,
 		onEditMode = function(active)
@@ -1380,7 +1459,7 @@ local function BuildHelp()
 				else
 					mine = IsDone(id)
 				end
-				if mine then quests[#quests + 1] = id end
+				if mine and not IsQuestHidden(id) then quests[#quests + 1] = id end
 			end
 			if #quests > 0 then
 				table.sort(quests)
@@ -1395,6 +1474,18 @@ local function BuildHelp()
 		end
 	end
 	return entries, table.concat(parts, ";")
+end
+
+-- Quest aus dem Fenster "Mitspielern helfen" öffnen: im eigenen Questlog wie gewohnt, sonst (meist schon
+-- abgegeben) als angeheftetes Quest-Fenster, so wie beim Klick auf einen Quest-Link im Chat
+local function OpenHelpQuest(id)
+	if IsShiftKeyDown() or myIds[id] then
+		OpenQuest(id)
+		return
+	end
+	if SetItemRef then
+		pcall(SetItemRef, ("quest:%d:%d"):format(id, UnitLevel("player")), QuestLink(id), "LeftButton")
+	end
 end
 
 local function GetHelpRow(i)
@@ -1418,8 +1509,30 @@ local function GetHelpRow(i)
 	row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 3)
 	row.fs:SetJustifyH("LEFT")
 	row.fs:SetWordWrap(false)
+	-- Questzeile: Tooltip mit dem Questtext wie in den anderen Fenstern; Klick öffnet die Quest
+	-- (im Questlog, sonst als angeheftetes Quest-Fenster wie ein Link im Chat), Umschalt-Klick verlinkt sie.
 	-- Kopfzeile eines Mitglieds: Linksklick fluestert, Rechtsklick visiert an
+	row.hl = row:CreateTexture(nil, "HIGHLIGHT")
+	row.hl:SetAllPoints()
+	row.hl:SetColorTexture(1, 1, 1, 0.08)
 	row:SetScript("OnEnter", function(self)
+		if self.questId then
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			local ok = pcall(GameTooltip.SetHyperlink, GameTooltip, ("quest:%d:%d"):format(self.questId, UnitLevel("player")))
+			if not ok then
+				GameTooltip:ClearLines()
+				GameTooltip:AddLine(QuestName(self.questId))
+			end
+			if myIds[self.questId] then
+				GameTooltip:AddLine(T("Klick: im Questlog öffnen", "Click: open in quest log"), 0.6, 0.6, 0.6)
+			else
+				GameTooltip:AddLine(T("Klick: Quest anzeigen", "Click: show quest"), 0.6, 0.6, 0.6)
+			end
+			GameTooltip:AddLine(T("Shift-Klick: Link in den Chat", "Shift-click: link into chat"), 0.6, 0.6, 0.6)
+			GameTooltip:AddLine(T("Rechtsklick: ausblenden", "Right-click: hide"), 0.6, 0.6, 0.6)
+			GameTooltip:Show()
+			return
+		end
 		if not self.member then return end
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 		GameTooltip:SetText(self.member)
@@ -1429,6 +1542,15 @@ local function GetHelpRow(i)
 	end)
 	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	row:SetScript("OnMouseUp", function(self, button)
+		if self.questId then
+			if not self:IsMouseOver() then return end
+			if button == "RightButton" then
+				HideQuest(self.questId)
+			elseif button == "LeftButton" then
+				OpenHelpQuest(self.questId)
+			end
+			return
+		end
 		local name = self.member
 		if not name or name == "Testmate" then return end
 		if button == "RightButton" then
@@ -1486,7 +1608,9 @@ local function ConfigureHelpRow(row, e, goals)
 	row.name:SetShown(isHeader)
 	row.fs:SetShown(not isHeader)
 	row.member = isHeader and e.name or nil
-	row:EnableMouse(isHeader)
+	row.questId = isQuest and e.id or nil
+	row:EnableMouse(isHeader or row.questId ~= nil)
+	row.hl:SetShown(row.questId ~= nil)
 	row.accent:SetShown(isQuest)
 	row.divider:SetShown(false)
 	row.pill.tex:ClearAllPoints()
@@ -1603,6 +1727,7 @@ local function CreateHelpUI()
 			{ type = "check", name = T("Auch Quests zählen, die du noch im Log hast und nur abgeben musst", "Also count quests still in your log that you only have to hand in"),
 				get = function() return cfg.helpReady end,
 				set = function(v) cfg.helpReady = v and true or false; Refresh() end },
+			HiddenSettings(),
 		},
 		onMoved = function(self) db.anchoredHeight = self:GetHeight() end,
 	})
@@ -1666,53 +1791,6 @@ local areaNames = {}          -- [AreaId] = Name oder false
 
 local areaMaps = {}           -- [AreaId] = UiMapID (aus Questies ZoneDB) oder false
 
--- Ausgeblendete Quests (Rechtsklick im Fenster), gespeichert in SexyQuestHelperDB.nearHidden: [Quest] = Name.
--- Der Name wird mitgespeichert, damit die Liste auch Quests zeigen kann, die nicht mehr im Log sind.
-local function IsNearHidden(id)
-	local hidden = SexyQuestHelperDB.nearHidden
-	return hidden and hidden[id] ~= nil
-end
-
-local function HiddenCount()
-	local n = 0
-	for _ in pairs(SexyQuestHelperDB.nearHidden or {}) do n = n + 1 end
-	return n
-end
-
--- Ausgeblendete Quests nach Namen sortiert: { { id, name }, ... }
-local function HiddenList()
-	local list = {}
-	for id, name in pairs(SexyQuestHelperDB.nearHidden or {}) do
-		list[#list + 1] = { id = id, name = myTitles[id] or (type(name) == "string" and name) or QuestName(id) }
-	end
-	table.sort(list, function(a, b) return a.name < b.name end)
-	return list
-end
-
-local function RefreshHiddenDialog()
-	if SEM.dialog and SEM.dialog:IsShown() then SEM:RebuildDialog() end
-end
-
-local function HideNearQuest(id)
-	if not id then return end
-	SexyQuestHelperDB.nearHidden = SexyQuestHelperDB.nearHidden or {}
-	SexyQuestHelperDB.nearHidden[id] = QuestName(id)
-	print("|cffe8c26aSexyQuestHelper|r " .. T("ausgeblendet: ", "hidden: ") .. QuestName(id) .. " |cff9b9180("
-		.. T("wieder einblenden im Edit Mode oder mit /sqh near hidden", "show again in Edit Mode or with /sqh near hidden") .. ")|r")
-	RefreshNear()
-	RefreshHiddenDialog()
-end
-
--- id = nil: alle wieder einblenden
-local function UnhideNearQuest(id)
-	if id then
-		if SexyQuestHelperDB.nearHidden then SexyQuestHelperDB.nearHidden[id] = nil end
-	else
-		SexyQuestHelperDB.nearHidden = {}
-	end
-	RefreshNear()
-	RefreshHiddenDialog()
-end
 local debugAreas              -- nur fuer /sqh near debug: [AreaId] = true, alle gesehenen Gebiete
 
 -- Namen sprachneutral vergleichbar machen (Gross/Klein, Leerzeichen am Rand)
@@ -1868,7 +1946,7 @@ local function ComputeNear()
 	local hold = (cfg.nearHold or 3) * 60
 
 	for id in pairs(myIds) do
-		if not IsNearHidden(id) then
+		if not IsQuestHidden(id) then
 			local p = myProgress[id]
 			local points, known = QuestPoints(id, wanted, mapID)
 			local best
@@ -1953,8 +2031,7 @@ local function GetNearRow(i)
 	row:SetScript("OnClick", function(self, button)
 		if not self.questId then return end
 		if button == "RightButton" then
-			GameTooltip:Hide()
-			HideNearQuest(self.questId)
+			HideQuest(self.questId)
 		else
 			OpenQuest(self.questId)
 		end
@@ -2145,7 +2222,7 @@ function RefreshNear()
 	if hiddenCount > 0 and not testMode then
 		nearUI.hiddenNote:ClearAllPoints()
 		nearUI.hiddenNote:SetPoint("TOPLEFT", nearUI, "TOPLEFT", 14, -(y + 2))
-		nearUI.hiddenNote:SetText(T(hiddenCount .. " ausgeblendet · /sqh near hidden", hiddenCount .. " hidden · /sqh near hidden"))
+		nearUI.hiddenNote:SetText(T(hiddenCount .. " ausgeblendet · /sqh hidden", hiddenCount .. " hidden · /sqh hidden"))
 		nearUI.hiddenNote:Show()
 		y = y + 16
 	else
@@ -2289,23 +2366,7 @@ local function CreateNearUI()
 			{ type = "check", name = T("Ton, wenn eine Quest neu in Reichweite kommt", "Sound when a quest comes into range"),
 				get = function() return cfg.nearSound end,
 				set = function(v) cfg.nearSound = v and true or false end },
-			{ type = "header", name = T("Ausgeblendete Quests", "Hidden quests"), id = "nearHidden" },
-			{ type = "dynamic", build = function()
-				local list = HiddenList()
-				if #list == 0 then
-					return { { type = "divider", key = "sqh-hidden-none",
-						name = T("Keine. Rechtsklick auf eine Quest blendet sie aus.", "None. Right-click a quest to hide it.") } }
-				end
-				local rows = {}
-				for _, h in ipairs(list) do
-					local id = h.id
-					rows[#rows + 1] = { type = "button", key = "sqh-unhide-" .. id .. "-" .. h.name,
-						name = T("Einblenden: ", "Show: ") .. h.name, onClick = function() UnhideNearQuest(id) end }
-				end
-				rows[#rows + 1] = { type = "button", key = "sqh-unhide-all",
-					name = T("Alle wieder einblenden", "Show all again"), onClick = function() UnhideNearQuest(nil) end }
-				return rows
-			end },
+			HiddenSettings(),
 		},
 		onMoved = function(self) db.anchoredHeight = self:GetHeight() end,
 	})
@@ -2534,25 +2595,25 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 		DebugNear()
 		return
 	end
-	if arg == "near hidden" or arg == "near ausgeblendet" then
+	if arg == "hidden" or arg == "ausgeblendet" or arg == "near hidden" or arg == "near ausgeblendet" then
 		local list = HiddenList()
 		if #list == 0 then
 			print("|cffe8c26aSexyQuestHelper|r " .. T("Keine Quests ausgeblendet.", "No hidden quests."))
 		else
 			print("|cffe8c26aSexyQuestHelper|r " .. T("Ausgeblendete Quests:", "Hidden quests:"))
 			for _, h in ipairs(list) do print(("  [%d] %s"):format(h.id, h.name)) end
-			print("  " .. T("Einblenden: /sqh near show <ID> oder /sqh near show all", "Show again: /sqh near show <ID> or /sqh near show all"))
+			print("  " .. T("Einblenden: /sqh show <ID> oder /sqh show all", "Show again: /sqh show <ID> or /sqh show all"))
 		end
 		return
 	end
-	local showId = arg:match("^near show%s+(%S+)$")
+	local showId = arg:match("^show%s+(%S+)$") or arg:match("^near show%s+(%S+)$")
 	if showId then
 		local id = tonumber(showId)
 		if showId == "all" or showId == "alle" then
-			UnhideNearQuest(nil)
+			UnhideQuest(nil)
 			print("|cffe8c26aSexyQuestHelper|r " .. T("Alle Quests wieder eingeblendet.", "All quests shown again."))
-		elseif id and IsNearHidden(id) then
-			UnhideNearQuest(id)
+		elseif id and IsQuestHidden(id) then
+			UnhideQuest(id)
 			print("|cffe8c26aSexyQuestHelper|r " .. T("wieder eingeblendet: ", "shown again: ") .. QuestName(id))
 		else
 			print("|cffe8c26aSexyQuestHelper|r " .. T("Diese Quest ist nicht ausgeblendet.", "This quest is not hidden."))
