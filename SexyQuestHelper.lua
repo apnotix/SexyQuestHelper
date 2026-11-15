@@ -1448,7 +1448,7 @@ end
 -- Ein Ziel: Kästchen, Text und rechts ein Etikett mit dem Stand ("3/8")
 -- Kleine Etiketten ("Chips") für den Stand der Gruppenmitglieder: Klassensymbol und Stand ("3/8", Haken, "45 %")
 -- auf dunkler Pille wie die übrigen Etiketten. Maus darüber zeigt Name und Stand im Tooltip.
-local CHIP_H = 16
+local CHIP_H = 14   -- so hoch wie das eigene Stand-Etikett eines Ziels
 local CHIP_FG = {
 	open = { 0.94, 0.75, 0.29 },
 	done = { 0.48, 0.88, 0.56 },
@@ -1483,11 +1483,14 @@ local function GetChip(owner, pool, i)
 	return chip
 end
 
--- Legt die Chips (list = { { name, text, state, tip }, ... }) ab x/y (von oben links in owner) nebeneinander,
--- bricht bei maxW um und gibt die belegte Höhe zurück (0 ohne Chips)
-local function LayoutChips(owner, pool, list, x, y, maxW)
-	local cx, cy = 0, 0
-	for i, item in ipairs(list or {}) do
+-- Legt die Chips (list = { { name, text, state, tip }, ... }) als Badges in eine Reihe, rechtsbündig: der rechte Rand
+-- liegt right Pixel vor dem rechten Rand von owner, die Oberkante top Pixel unter dessen Oberkante (also direkt links
+-- neben dem eigenen Stand-Etikett). Gibt die belegte Breite zurück (0 ohne Chips).
+local function LayoutChips(owner, pool, list, right, top)
+	local n = list and #list or 0
+	local cx = 0
+	for i = n, 1, -1 do
+		local item = list[i]
 		local chip = GetChip(owner, pool, i)
 		chip.item = item
 		SetClassIcon(chip.icon, item.name)
@@ -1496,16 +1499,13 @@ local function LayoutChips(owner, pool, list, x, y, maxW)
 		chip.text:SetTextColor(fg[1], fg[2], fg[3])
 		local w = 2 + 12 + 4 + math.ceil(chip.text:GetStringWidth()) + 6
 		chip:SetWidth(w)
-		if cx > 0 and cx + w > maxW then
-			cx, cy = 0, cy + CHIP_H + 3
-		end
 		chip:ClearAllPoints()
-		chip:SetPoint("TOPLEFT", owner, "TOPLEFT", x + cx, -(y + cy))
+		chip:SetPoint("TOPRIGHT", owner, "TOPRIGHT", -(right + cx), -top)
 		chip:Show()
-		cx = cx + w + 4
+		cx = cx + w + 3
 	end
-	for i = #(list or {}) + 1, #pool do pool[i]:Hide() end
-	return (list and #list > 0) and (cy + CHIP_H) or 0
+	for i = n + 1, #pool do pool[i]:Hide() end
+	return n > 0 and (cx - 3) or 0
 end
 
 local function GetGoal(row, j)
@@ -1609,12 +1609,12 @@ local function RenderGoals(row, goals, top)
 	local y = top
 	for j, goal in ipairs(goals) do
 		local g = GetGoal(row, j)
-		g.text:SetWidth(WIDTH - 24 - GOAL_TEXT_X - 8 - (goal.count and (38 + 6) or 0))
+		-- Badges der Gruppenmitglieder rechts, direkt vor dem eigenen Stand; der Zieltext endet davor
+		local own = goal.count and (38 + 4) or 0
+		local cw = LayoutChips(g, g.chips, goal.mates, 8 + own, 3)
+		g.text:SetWidth(WIDTH - 24 - GOAL_TEXT_X - 8 - (goal.count and (38 + 6) or 0) - ((cw > 0) and (cw + 6) or 0))
 		g.text:SetText(goal.name)
 		local h = math.max(GOAL_H, math.ceil(g.text:GetStringHeight()) + 14)
-		local ch = LayoutChips(g, g.chips, goal.mates, GOAL_TEXT_X, 5 + math.ceil(g.text:GetStringHeight()) + 4,
-			WIDTH - 24 - GOAL_TEXT_X - 8)
-		if ch > 0 then h = h + ch + 4 end
 		g:ClearAllPoints()
 		g:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -y)
 		g:SetSize(WIDTH - 24, h)
@@ -2439,7 +2439,8 @@ function RefreshNear()
 		row.accent:Hide()
 		row.divider:Hide()
 		for _, g in ipairs(row.goals) do g:Hide() end
-		LayoutChips(row, row.chips, nil, 0, 0, 0)
+		LayoutChips(row, row.chips, nil, 0, 0)
+		row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 0)
 		row.fs:SetText("|cff9b9180" .. (HasQuestieDB() and T("Keine Quest-Ziele in der Nähe.", "No quest goals nearby.")
 			or T("Keine Ziele bekannt. Ohne QuestieDB lernt das Addon die Orte beim Spielen.", "No goals known. Without QuestieDB the addon learns the places while you play.")) .. "|r")
 		row:Show()
@@ -2483,8 +2484,10 @@ function RefreshNear()
 				perGoal, questMates = NearMates(e.id, #goals)
 			end
 			for j, goal in ipairs(goals) do goal.mates = perGoal[j] end
-			local mh = LayoutChips(row, row.chips, questMates, GOAL_TEXT_X, NEAR_ROW_H - 4, WIDTH - 24 - GOAL_TEXT_X - 8)
-			if mh > 0 then mh = mh + 4 end
+			-- Badges zur ganzen Quest rechts im Titel, direkt vor der Entfernung; der Titel endet davor
+			local qw = LayoutChips(row, row.chips, questMates, 8 + row.pill.tex:GetWidth() + 4, 6)
+			row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -(6 + ((qw > 0) and (qw + 4) or 0)), 0)
+			local mh = 0
 
 			local gh = RenderGoals(row, goals, NEAR_ROW_H - 2 + mh)
 			local h = NEAR_ROW_H + mh + ((gh > 0) and (4 + gh) or 0) + 4
