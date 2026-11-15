@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Right-click a quest to hide it now also works in the main window and in "Help your group", not only in "Quests nearby". There is one shared list of hidden quests for all three windows; each window's Edit Mode dialog has the "Hidden quests" section to show them again. In chat: `/sqh hidden` and `/sqh show <ID|all>` (the old `/sqh near hidden` / `/sqh near show` still work)
+- "Help your group": hover a quest for its tooltip with the quest text; click opens it in the quest log if you still have it, otherwise it opens as a pinned quest window like a quest link in chat. Shift-click links it into the chat
 - "Quests nearby": the list scrolls with the mouse wheel once it is taller than a set height (default 400 px, 150-900 in the Edit Mode dialog), with a thin bar at the right showing the position; the window no longer runs off the screen
 - "Quests nearby": right-click a quest to hide it from the window (saved across sessions, for all characters), for quests that are "nearby" everywhere such as the pages of "The Green Hills of Stranglethorn". A grey line at the bottom of the window shows how many are hidden; the Edit Mode dialog has a section "Hidden quests" with a button per quest to show it again and "Show all again". In chat: `/sqh near hidden` lists them, `/sqh near show <ID>` or `/sqh near show all` brings them back
 - "Quests nearby" on non-English clients (e.g. German): goal areas are now matched to your zone by map ID via Questie's zone data when Questie is loaded, instead of only by the localized zone name; name matching ignores case and stray spaces. `/sqh near debug` also lists the goal areas (ID, name, map) of quests that found no points
