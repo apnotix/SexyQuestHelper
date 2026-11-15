@@ -1663,19 +1663,65 @@ local pointsCache = {}        -- [Quest] = { zoneKey, points = { {x, y}, ... }, 
 local progressAt = {}         -- [Quest] = GetTime() des letzten Fortschritts (für Quests ohne festen Ort)
 local areaNames = {}          -- [AreaId] = Name oder false
 
-local function AreaMatches(areaId, wanted)
-	local name = areaNames[areaId]
+local areaMaps = {}           -- [AreaId] = UiMapID (aus Questies ZoneDB) oder false
+local debugAreas              -- nur fuer /sqh near debug: [AreaId] = true, alle gesehenen Gebiete
 
+-- Namen sprachneutral vergleichbar machen (Gross/Klein, Leerzeichen am Rand)
+local function NormName(name)
+	if type(name) ~= "string" then return nil end
+	name = name:lower():gsub("^%s+", ""):gsub("%s+$", "")
+	return name ~= "" and name or nil
+end
+
+-- Gesuchtes Gebiet: Zonenkarte (ID) und ihre Namen in der Sprache des Clients
+local function Wanted(mapID, ...)
+	local wanted = { mapID = mapID, names = {} }
+	for i = 1, select("#", ...) do
+		local n = NormName((select(i, ...)))
+		if n then wanted.names[n] = true end
+	end
+	return wanted
+end
+
+-- Questie (falls geladen) kennt die Zuordnung AreaId -> UiMapID; damit ist der Vergleich unabhaengig
+-- von der Client-Sprache. Nil = keine Zuordnung bekannt.
+local function AreaToMap(areaId)
+	local m = areaMaps[areaId]
+	if m == nil then
+		m = false
+		local loader = _G.QuestieLoader
+		if loader and loader.ImportModule then
+			local ok, zoneDB = pcall(loader.ImportModule, loader, "ZoneDB")
+			if ok and zoneDB and zoneDB.GetUiMapIdByAreaId then
+				local ok2, id = pcall(zoneDB.GetUiMapIdByAreaId, zoneDB, areaId)
+				if ok2 and type(id) == "number" and id > 0 then m = id end
+			end
+		end
+		areaMaps[areaId] = m
+	end
+	return m or nil
+end
+
+local function AreaName(areaId)
+	local name = areaNames[areaId]
 	if name == nil then
 		local ok, value = pcall(function()
 			if C_Map and C_Map.GetAreaInfo then return C_Map.GetAreaInfo(areaId) end
 		end)
-
 		name = ok and value or false
 		areaNames[areaId] = name
 	end
+	return name or nil
+end
 
-	return name and wanted[name] and true or false
+local function AreaMatches(areaId, wanted)
+	if debugAreas then debugAreas[areaId] = true end
+
+	local m = AreaToMap(areaId)
+	if m and m == wanted.mapID then return true end
+
+	local n = NormName(AreaName(areaId))
+	return n and wanted.names[n] and true or false
 end
 
 -- Spawn-Punkte (Prozent der Zonenkarte) im gesuchten Gebiet sammeln; mit Obergrenze gegen riesige Droplisten
@@ -1766,7 +1812,7 @@ local function ComputeNear()
 		if w and h and w > 0 and h > 0 then width, height = w, h end
 	end
 
-	local wanted = { [GetRealZoneText() or ""] = true, [mapName or ""] = true }
+	local wanted = Wanted(mapID, GetRealZoneText(), mapName)
 	local radius = cfg.nearRadius
 
 	local now = GetTime()
@@ -1913,11 +1959,15 @@ local function DebugNear()
 	local w, h
 	if C_Map.GetMapWorldSize then w, h = C_Map.GetMapWorldSize(mapID) end
 	say("Kartengröße (Yards): " .. tostring(w) .. " x " .. tostring(h))
-	local wanted = { [GetRealZoneText() or ""] = true, [mapName or ""] = true }
+	local wanted = Wanted(mapID, GetRealZoneText(), mapName)
 	local count = 0
 	for id in pairs(myIds) do
 		count = count + 1
+		pointsCache[id] = nil
+		debugAreas = {}
 		local points = QuestPoints(id, wanted, mapID)
+		local seen = debugAreas
+		debugAreas = nil
 		local best
 		if px and py then
 			for _, c in ipairs(points) do
@@ -1926,6 +1976,14 @@ local function DebugNear()
 			end
 		end
 		say(("%s [%d]: %d Punkte, nächster %s"):format(QuestName(id), id, #points, best and (math.floor(best) .. " m") or "-"))
+		if #points == 0 then
+			local parts = {}
+			for areaId in pairs(seen) do
+				if #parts >= 6 then break end
+				parts[#parts + 1] = ("%s=%s/m%s"):format(tostring(areaId), tostring(AreaName(areaId)), tostring(AreaToMap(areaId)))
+			end
+			say("    Gebiete der Ziele: " .. (#parts > 0 and table.concat(parts, ", ") or "keine (QuestieDB kennt keine Orte)"))
+		end
 	end
 	if count == 0 then say("Keine Quests deines Gebiets im Log (myIds leer).") end
 end
