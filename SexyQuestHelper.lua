@@ -1446,6 +1446,68 @@ local function HasQuestieDB()
 end
 
 -- Ein Ziel: Kästchen, Text und rechts ein Etikett mit dem Stand ("3/8")
+-- Kleine Etiketten ("Chips") für den Stand der Gruppenmitglieder: Klassensymbol und Stand ("3/8", Haken, "45 %")
+-- auf dunkler Pille wie die übrigen Etiketten. Maus darüber zeigt Name und Stand im Tooltip.
+local CHIP_H = 16
+local CHIP_FG = {
+	open = { 0.94, 0.75, 0.29 },
+	done = { 0.48, 0.88, 0.56 },
+	none = { 0.66, 0.61, 0.54 },
+}
+
+local function GetChip(owner, pool, i)
+	local chip = pool[i]
+	if chip then return chip end
+
+	chip = CreateFrame("Frame", nil, owner)
+	chip:SetHeight(CHIP_H)
+	chip.bg = chip:CreateTexture(nil, "BACKGROUND")
+	chip.bg:SetAllPoints()
+	chip.bg:SetColorTexture(0.16, 0.145, 0.12, 1)
+	chip.icon = chip:CreateTexture(nil, "ARTWORK")
+	chip.icon:SetSize(12, 12)
+	chip.icon:SetPoint("LEFT", chip, "LEFT", 2, 0)
+	chip.text = chip:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
+	chip.text:SetPoint("LEFT", chip.icon, "RIGHT", 4, 0)
+	chip:EnableMouse(true)
+	if chip.SetPropagateMouseClicks then pcall(chip.SetPropagateMouseClicks, chip, true) end
+	chip:SetScript("OnEnter", function(self)
+		if not self.item then return end
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText(ColoredName(self.item.name))
+		if self.item.tip then GameTooltip:AddLine(self.item.tip, 0.85, 0.82, 0.75) end
+		GameTooltip:Show()
+	end)
+	chip:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	pool[i] = chip
+	return chip
+end
+
+-- Legt die Chips (list = { { name, text, state, tip }, ... }) ab x/y (von oben links in owner) nebeneinander,
+-- bricht bei maxW um und gibt die belegte Höhe zurück (0 ohne Chips)
+local function LayoutChips(owner, pool, list, x, y, maxW)
+	local cx, cy = 0, 0
+	for i, item in ipairs(list or {}) do
+		local chip = GetChip(owner, pool, i)
+		chip.item = item
+		SetClassIcon(chip.icon, item.name)
+		chip.text:SetText(item.text)
+		local fg = CHIP_FG[item.state] or CHIP_FG.none
+		chip.text:SetTextColor(fg[1], fg[2], fg[3])
+		local w = 2 + 12 + 4 + math.ceil(chip.text:GetStringWidth()) + 6
+		chip:SetWidth(w)
+		if cx > 0 and cx + w > maxW then
+			cx, cy = 0, cy + CHIP_H + 3
+		end
+		chip:ClearAllPoints()
+		chip:SetPoint("TOPLEFT", owner, "TOPLEFT", x + cx, -(y + cy))
+		chip:Show()
+		cx = cx + w + 4
+	end
+	for i = #(list or {}) + 1, #pool do pool[i]:Hide() end
+	return (list and #list > 0) and (cy + CHIP_H) or 0
+end
+
 local function GetGoal(row, j)
 	local g = row.goals[j]
 	if g then return g end
@@ -1463,12 +1525,7 @@ local function GetGoal(row, j)
 	g.text:SetJustifyH("LEFT")
 	g.text:SetJustifyV("TOP")
 	g.text:SetWordWrap(true)
-	-- Stand der Gruppenmitglieder zu diesem Ziel (nur "Quests in der Nähe"), klein unter dem Zieltext
-	g.mates = g:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
-	g.mates:SetPoint("TOPLEFT", g.text, "BOTTOMLEFT", 0, -2)
-	g.mates:SetJustifyH("LEFT")
-	g.mates:SetWordWrap(true)
-	g.mates:SetTextColor(0.75, 0.71, 0.63)
+	g.chips = {}   -- Stand der Gruppenmitglieder (nur "Quests in der Nähe"), siehe LayoutChips
 	-- Fortschrittsbalken unter dem Ziel, wie im Fenster "Mitspielern helfen"
 	g.barBg = g:CreateTexture(nil, "BORDER")
 	g.barBg:SetPoint("BOTTOMLEFT", g, "BOTTOMLEFT", GOAL_TEXT_X, 3)
@@ -1555,14 +1612,9 @@ local function RenderGoals(row, goals, top)
 		g.text:SetWidth(WIDTH - 24 - GOAL_TEXT_X - 8 - (goal.count and (38 + 6) or 0))
 		g.text:SetText(goal.name)
 		local h = math.max(GOAL_H, math.ceil(g.text:GetStringHeight()) + 14)
-		if goal.mates then
-			g.mates:SetWidth(WIDTH - 24 - GOAL_TEXT_X - 8)
-			g.mates:SetText(goal.mates)
-			g.mates:Show()
-			h = h + math.ceil(g.mates:GetStringHeight()) + 2
-		else
-			g.mates:Hide()
-		end
+		local ch = LayoutChips(g, g.chips, goal.mates, GOAL_TEXT_X, 5 + math.ceil(g.text:GetStringHeight()) + 4,
+			WIDTH - 24 - GOAL_TEXT_X - 8)
+		if ch > 0 then h = h + ch + 4 end
 		g:ClearAllPoints()
 		g:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -y)
 		g:SetSize(WIDTH - 24, h)
@@ -2218,14 +2270,7 @@ local function GetNearRow(i)
 	row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 0)
 	row.fs:SetJustifyH("LEFT")
 	row.fs:SetWordWrap(false)
-	-- Stand der Gruppenmitglieder zur ganzen Quest (Prozent, fertig, "hat die Quest"), unter dem Titel
-	row.mates = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
-	row.mates:SetPoint("TOPLEFT", row, "TOPLEFT", 10, -(NEAR_ROW_H - 4))
-	row.mates:SetWidth(WIDTH - 24 - 18)
-	row.mates:SetJustifyH("LEFT")
-	row.mates:SetWordWrap(true)
-	row.mates:SetTextColor(0.75, 0.71, 0.63)
-	row.mates:Hide()
+	row.chips = {}   -- Stand der Gruppenmitglieder zur ganzen Quest, unter dem Titel
 	-- Streifen am linken Rand: gelb, solange Ziele offen sind, grün, wenn alle erledigt sind
 	row.accent = row:CreateTexture(nil, "ARTWORK")
 	row.accent:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
@@ -2242,50 +2287,49 @@ local function GetNearRow(i)
 	return row
 end
 
--- Stand der Gruppenmitglieder zu einer Quest für "Quests in der Nähe".
--- Liefert perGoal[j] = Text für Ziel j (nur wenn die Zahl der Ziele passt) und eine Zeile für die ganze Quest
--- (Mitglieder ohne einzelne Ziele: Prozent; fertig/abgegeben; ohne Addon nur "hat die Quest" über die Blizzard-API).
+-- Stand der Gruppenmitglieder zu einer Quest für "Quests in der Nähe" als Chips (siehe LayoutChips).
+-- perGoal[j] = Chips für Ziel j (nur wenn die Zahl der Ziele passt), quest = Chips für die ganze Quest
+-- (ohne passende Einzelziele: Prozent; fertig/abgegeben; ohne Addon nur "?" über die Blizzard-API).
 local CHECK = "|TInterface\\RaidFrame\\ReadyCheck-Ready:11|t"
 
 local function NearMates(id, goalCount)
 	local perGoal, quest = {}, {}
-	if not (cfg.nearMates and id) then return perGoal, nil end
-
-	local function addGoal(j, text)
-		perGoal[j] = perGoal[j] and (perGoal[j] .. "   " .. text) or text
-	end
+	if not (cfg.nearMates and id) then return perGoal, quest end
 
 	for _, name in ipairs(GroupNames()) do
-		local cname = ColoredName(name)
 		local prog = progressBy[name] and progressBy[name][id]
 		local det = detailsBy[name] and detailsBy[name][id]
 
 		if completedBy[name] and completedBy[name][id] then
-			quest[#quest + 1] = cname .. " " .. CHECK .. "|cff8a8070" .. T("abgegeben", "turned in") .. "|r"
+			quest[#quest + 1] = { name = name, text = CHECK, state = "done", tip = T("Quest abgegeben", "Quest turned in") }
 		elseif prog and prog.ready then
-			quest[#quest + 1] = cname .. " " .. CHECK
+			quest[#quest + 1] = { name = name, text = CHECK, state = "done", tip = T("Alle Ziele erledigt", "All goals done") }
 		elseif det and goalCount > 0 and #det == goalCount then
 			for j, text in ipairs(det) do
-				local _, a, b = SplitGoalText(text)
+				local goalName, a, b = SplitGoalText(text)
 				if a and b and b > 0 then
-					addGoal(j, cname .. " " .. (a >= b and CHECK or (math.min(a, b) .. "/" .. b)))
+					perGoal[j] = perGoal[j] or {}
+					local done = a >= b
+					perGoal[j][#perGoal[j] + 1] = { name = name, text = done and CHECK or (math.min(a, b) .. "/" .. b),
+						state = done and "done" or "open", tip = goalName .. ": " .. math.min(a, b) .. "/" .. b }
 				end
 			end
 		elseif prog then
-			quest[#quest + 1] = cname .. " " .. prog.pct .. " %"
+			quest[#quest + 1] = { name = name, text = prog.pct .. " %", state = "open", tip = T("Fortschritt ", "Progress ") .. prog.pct .. " %" }
 		elseif not members[name] then
 			-- ohne Addon: Blizzard verrät nur, ob das Mitglied die Quest hat
 			local unit = unitByName[name]
 			if unit and C_QuestLog and C_QuestLog.IsUnitOnQuest then
 				local ok, on = pcall(C_QuestLog.IsUnitOnQuest, unit, id)
 				if ok and on then
-					quest[#quest + 1] = cname .. " |cff8a8070" .. T("hat die Quest", "has the quest") .. "|r"
+					quest[#quest + 1] = { name = name, text = "?", state = "none",
+						tip = T("Hat die Quest (ohne Addon, Stand unbekannt)", "Has the quest (no addon, progress unknown)") }
 				end
 			end
 		end
 	end
 
-	return perGoal, (#quest > 0) and table.concat(quest, "   ") or nil
+	return perGoal, quest
 end
 
 local function BuildNear()
@@ -2293,9 +2337,9 @@ local function BuildNear()
 		return {
 			{ title = T("Beispiel-Quest", "Sample quest"), dist = 24,
 				objs = { T("Wölfe getötet: 8/8", "Wolves slain: 8/8"), T("Fell: 0/1", "Pelt: 0/1") },
-				testMates = { "|cffc79c6eTestmate|r 5/8", "|cffc79c6eTestmate|r " .. CHECK } },
+				testMates = { { { name = "Testmate", text = "5/8", state = "open" } }, { { name = "Testmate", text = CHECK, state = "done" } } } },
 			{ title = T("Noch eine Quest", "Another quest"), dist = 51, objs = { T("Beutel gefunden: 0/1", "Pouch found: 0/1") },
-				testQuestMates = "|cff3fc7ebTestmage|r |cff8a8070" .. T("hat die Quest", "has the quest") .. "|r" },
+				testQuestMates = { { name = "Testmate", text = "?", state = "none" } } },
 		}, "test"
 	end
 
@@ -2395,7 +2439,7 @@ function RefreshNear()
 		row.accent:Hide()
 		row.divider:Hide()
 		for _, g in ipairs(row.goals) do g:Hide() end
-		row.mates:Hide()
+		LayoutChips(row, row.chips, nil, 0, 0, 0)
 		row.fs:SetText("|cff9b9180" .. (HasQuestieDB() and T("Keine Quest-Ziele in der Nähe.", "No quest goals nearby.")
 			or T("Keine Ziele bekannt. Ohne QuestieDB lernt das Addon die Orte beim Spielen.", "No goals known. Without QuestieDB the addon learns the places while you play.")) .. "|r")
 		row:Show()
@@ -2439,14 +2483,8 @@ function RefreshNear()
 				perGoal, questMates = NearMates(e.id, #goals)
 			end
 			for j, goal in ipairs(goals) do goal.mates = perGoal[j] end
-			local mh = 0
-			if questMates then
-				row.mates:SetText(questMates)
-				row.mates:Show()
-				mh = math.ceil(row.mates:GetStringHeight()) + 4
-			else
-				row.mates:Hide()
-			end
+			local mh = LayoutChips(row, row.chips, questMates, GOAL_TEXT_X, NEAR_ROW_H - 4, WIDTH - 24 - GOAL_TEXT_X - 8)
+			if mh > 0 then mh = mh + 4 end
 
 			local gh = RenderGoals(row, goals, NEAR_ROW_H - 2 + mh)
 			local h = NEAR_ROW_H + mh + ((gh > 0) and (4 + gh) or 0) + 4
@@ -2468,7 +2506,12 @@ function RefreshNear()
 
 	-- Knopf im Kopf zeigt, wie viele Quests ausgeblendet sind
 	nearUI.hiddenBtn.text:SetText(T("Ausgeblendet: ", "Hidden: ") .. HiddenCount())
-	nearUI.hiddenBtn:SetWidth(nearUI.hiddenBtn.text:GetStringWidth() + 14)
+	local bw = nearUI.hiddenBtn.text:GetStringWidth() + 14
+	nearUI.hiddenBtn:SetWidth(bw)
+	-- mittig im Titelband; ist der Titel zu breit, rückt der Knopf so weit nach rechts, dass er ihn nicht überdeckt
+	local shift = math.max(0, (12 + nearUI.title:GetStringWidth() + 8) - (WIDTH - bw) / 2)
+	nearUI.hiddenBtn:ClearAllPoints()
+	nearUI.hiddenBtn:SetPoint("TOP", nearUI, "TOP", shift, -7)
 
 	local newHeight = y + 10
 	local db = SexyQuestHelperDB.nearMode
@@ -2580,7 +2623,7 @@ local function CreateNearUI()
 
 	-- Kleiner Knopf im Kopf: öffnet den Dialog mit den ausgeblendeten Quests (zeigt ihre Anzahl)
 	f.hiddenBtn = FlatButton(f, "", 90, 18, 0.25, 0.21, 0.13)
-	f.hiddenBtn:SetPoint("RIGHT", close, "LEFT", -2, 0)
+	f.hiddenBtn:SetPoint("TOP", f, "TOP", 0, -7)   -- mittig im Titelband (siehe RefreshNear)
 	f.hiddenBtn:SetScript("OnClick", ToggleHiddenFrame)
 	f.hiddenBtn:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
