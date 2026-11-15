@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.16
+- "Quests nearby": a quest for which QuestieDB knows no real place stays in the list for a few minutes (default 3, 1-10 in the dialog) after its progress rose, wherever you stand, with a grey label showing how long ago; then it disappears. Quests with a known place still follow the range
+- "Help your group" uses the same look as "Quests nearby": every goal a row of its own with check box, state label and a progress bar, a colored stripe per quest; without single goals one bar shows the overall progress
+- "Quests nearby": goals as small rows of their own (check box, goal text, state label such as 3/8, plus a thin progress bar with some space under each goal; the count is shown in the label only, not in the goal text), a colored stripe at the left of each quest (yellow while goals are open, green when all are done) and thin dividers between quests
+- Goals in the "Quests nearby" and "Help your group" windows are listed one per line again (they ran together into one line)
+- "Quests nearby": hover a quest for its tooltip with the quest text, click opens it in the quest log, Shift-click links it into the chat
+- "Quests nearby": every goal of a quest is listed with a check box, finished goals ticked and green, open ones with an empty box; quests without numbered goals show the goal description from QuestieDB instead
+- New third window "Quests nearby": lists your open quests whose goals are within range (default 60 yards, 20-200) of where you stand, with the single goals and the distance. The goal positions come from the QuestieDB addon (creatures, objects, items via their drop sources, explore areas) in your current zone. In addition the addon learns places while you play: whenever the progress of a quest rises (for example after the first kill) your position counts as an area of that quest, so the window also works without QuestieDB. Optional, off by default (Edit Mode), optional sound when a quest comes into range, /sqh near toggles it
+
 ## 1.0.15
 - "Help your group": each quest now lists the individual goals ("Wolves slain: 5/8") of the member, finished ones in green. Click a member's header: left click whispers, right click targets (not in combat). The goal texts travel in two new message types (older versions ignore them)- Sharing a quest no longer prints "Quest shared" to chat; only errors are reported
 - New second window "Help your group": lists quests you have already finished (handed in, or only waiting to be handed in) that a group member in your zone still has, with their progress per quest (percent, or "Ready"). It is off by default: turn it on in the Edit Mode dialog, then it opens by itself. It can be placed and scaled in Edit Mode, is toggled with /sqh help and sends progress over a new message type. Quests you still have in your log are not listed (unless you turn on "also count quests you only have to hand in"); older versions simply ignore it.

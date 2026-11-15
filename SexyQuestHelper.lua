@@ -24,6 +24,10 @@ local DEFAULTS = {
 	chatNotice = false,        -- Hinweis im Chat, was fehlt
 	hideZone = false,          -- Gebiets-Etikett im Titel ausblenden
 	helpAuto = false,          -- zweites Fenster (Mitspielern helfen) einschalten: es geht dann von selbst auf
+	nearEnabled = false,       -- drittes Fenster (Quests in der Naehe) einschalten
+	nearRadius = 60,           -- Reichweite in Yards um eine Zielstelle
+	nearSound = false,         -- Ton, wenn eine Quest neu in Reichweite kommt
+	nearHold = 3,              -- Minuten, die eine Quest ohne festen Ort nach einem Fortschritt gelistet bleibt
 	helpReady = false,         -- Quests, die ich noch im Log habe und nur noch abgeben muss, zaehlen als erledigt
 }
 local cfg = setmetatable({}, { __index = DEFAULTS })
@@ -35,7 +39,8 @@ local SEM = LibStub("SexyEditMode-1.0")
 local frame = CreateFrame("Frame")
 local ui                      -- Anzeigefenster (lazy)
 local helpUI                  -- zweites Fenster: Mitspielern helfen
-local RefreshHelp
+local nearUI                  -- drittes Fenster: Quests in der Naehe
+local RefreshHelp, RefreshNear
 local myZone, myZoneKey, myIds, myTitles = "", "", {}, {} -- myZone: lokaler Name, myZoneKey: sprachunabhaengiger Vergleichsschluessel
 local mySignature = ""
 local members = {}            -- [name] = { zone = "", ids = { [id] = true } }
@@ -501,6 +506,7 @@ local function QuestProgress(id)
 	end
 	local done, need = 0, 0
 	local texts = {}
+	local data = {}   -- { text, have, need, finished } je Ziel
 	if C_QuestLog and C_QuestLog.GetQuestObjectives then
 		local ok, objectives = pcall(C_QuestLog.GetQuestObjectives, id)
 		if ok and type(objectives) == "table" then
@@ -510,7 +516,10 @@ local function QuestProgress(id)
 					need = need + required
 					done = done + math.min(tonumber(o.numFulfilled) or 0, required)
 				end
-				if type(o.text) == "string" and o.text ~= "" then texts[#texts + 1] = o.text end
+				if type(o.text) == "string" and o.text ~= "" then
+					texts[#texts + 1] = o.text
+					data[#data + 1] = { text = o.text, have = tonumber(o.numFulfilled) or 0, need = required, finished = o.finished and true or false }
+				end
 			end
 		end
 	else
@@ -524,20 +533,23 @@ local function QuestProgress(id)
 					need = need + tonumber(b)
 					done = done + math.min(tonumber(a), tonumber(b))
 				end
-				if text ~= "" then texts[#texts + 1] = text end
+				if text ~= "" then
+					texts[#texts + 1] = text
+					data[#data + 1] = { text = text, have = tonumber(a) or 0, need = tonumber(b) or 0 }
+				end
 			end
 		end
 	end
-	if ready then return 100, true, texts end
-	if need > 0 then return math.floor(done * 100 / need), false, texts end
-	return 0, false, texts
+	if ready then return 100, true, texts, data end
+	if need > 0 then return math.floor(done * 100 / need), false, texts, data end
+	return 0, false, texts, data
 end
 
 local function ComputeProgress(ids)
 	local result = {}
 	for id in pairs(ids) do
-		local pct, ready, texts = QuestProgress(id)
-		result[id] = { pct = pct, ready = ready, objs = texts }
+		local pct, ready, texts, data = QuestProgress(id)
+		result[id] = { pct = pct, ready = ready, objs = texts, goals = data }
 	end
 	return result
 end
@@ -1047,6 +1059,7 @@ local function CreateUI()
 		db = db,
 		settings = {
 			{ type = "link", name = T("Mitspielern helfen", "Help your group"), frame = function() return helpUI end },
+			{ type = "link", name = T("Quests in der Nähe", "Quests nearby"), frame = function() return nearUI end },
 			{ type = "check", name = T("Fenster \"Mitspielern helfen\" einschalten", "Turn on the \"Help your group\" window"),
 				get = function() return cfg.helpAuto end,
 				set = function(v) cfg.helpAuto = v and true or false; Refresh() end },
@@ -1190,7 +1203,153 @@ end
 -- Zweites Fenster: Quests, die du schon erledigt hast und ein Mitglied noch hat (mit seinem Fortschritt)
 ---------------------------------------------------------------------------
 
-local HELP_ROW_H, HELP_HEAD_H, HELP_OBJ_H = 26, 28, 12   -- Fragezeile, Kopfzeile, Hoehe je Zielzeile
+---------------------------------------------------------------------------
+-- Gemeinsame Darstellung der Ziele einer Quest (Fenster "Quests in der Nähe" und "Mitspielern helfen"):
+-- jedes Ziel eine kleine Zeile mit Kästchen, Text, Etikett mit dem Stand und einem Fortschrittsbalken
+---------------------------------------------------------------------------
+
+local GOAL_H = 25   -- Höhe je Ziel
+
+local function HasQuestieDB()
+	return _G.QuestDB and _G.NpcDB and _G.ObjectDB and _G.ItemDB
+end
+
+-- Ein Ziel: Kästchen, Text und rechts ein Etikett mit dem Stand ("3/8")
+local function GetGoal(row, j)
+	local g = row.goals[j]
+	if g then return g end
+
+	g = CreateFrame("Frame", nil, row)
+	g:SetHeight(GOAL_H)
+	g.icon = g:CreateTexture(nil, "ARTWORK")
+	g.icon:SetSize(13, 13)
+	-- Text, Kästchen und Etikett sitzen etwas über der Mitte, damit der Balken darunter Abstand hat
+	g.icon:SetPoint("LEFT", g, "LEFT", 14, 4)
+	g.pill = MakePill(g)
+	g.pill.tex:SetPoint("RIGHT", g, "RIGHT", -8, 4)
+	g.text = g:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
+	g.text:SetPoint("LEFT", g.icon, "RIGHT", 6, 0)
+	g.text:SetPoint("RIGHT", g.pill.tex, "LEFT", -6, 0)
+	g.text:SetJustifyH("LEFT")
+	g.text:SetWordWrap(false)
+	-- Fortschrittsbalken unter dem Ziel, wie im Fenster "Mitspielern helfen"
+	g.barBg = g:CreateTexture(nil, "BORDER")
+	g.barBg:SetPoint("BOTTOMLEFT", g, "BOTTOMLEFT", 33, 3)
+	g.barBg:SetPoint("BOTTOMRIGHT", g, "BOTTOMRIGHT", -8, 3)
+	g.barBg:SetHeight(3)
+	g.barBg:SetColorTexture(0.21, 0.19, 0.14, 1)
+	g.bar = g:CreateTexture(nil, "ARTWORK")
+	g.bar:SetPoint("BOTTOMLEFT", g.barBg, "BOTTOMLEFT")
+	g.bar:SetHeight(3)
+	row.goals[j] = g
+	return g
+end
+
+-- Ziele einer Quest als Liste { name, count, done, hint }: aus dem Questlog ("Wölfe getötet: 3/8" wird zu
+-- Name und Stand). Kennt das Questlog keine Ziele (noch nicht geladen), stehen stattdessen die Zielbeschreibungen
+-- aus QuestieDB (hint = true, ohne Stand).
+-- Stand aus einem Zieltext lesen: "0/1 Hauptmann getötet" (Stand vorn) oder "Wölfe getötet: 3/8" (Stand hinten).
+-- Liefert Name ohne Stand, Stand und Ziel (nil, wenn keine Zahl im Text steht).
+local function SplitGoalText(text)
+	text = tostring(text)
+	local a, b, rest = text:match("^%s*(%d+)/(%d+)%s+(.-)%s*$")
+	if a then return rest, tonumber(a), tonumber(b) end
+	local name, c, d = text:match("^(.-)%s*:?%s*(%d+)/(%d+)%s*$")
+	if name and name ~= "" then return name, tonumber(c), tonumber(d) end
+	return text
+end
+
+local function GoalList(id, objs, data)
+	local goals = {}
+
+	-- Bevorzugt die Zieldaten des Questlogs (Stand und Ziel als Zahlen): der Balken braucht keine Zahl im Text
+	for _, d in ipairs(data or {}) do
+		local name, ta, tb = SplitGoalText(d.text)
+		local have, need = d.have or 0, d.need or 0
+
+		-- Liefert das Questlog keine Zielzahl, gilt die Zahl aus dem Text
+		if need <= 0 and tb and tb > 0 then
+			have, need = ta, tb
+		end
+
+		local goal = { name = name, done = d.finished or (need > 0 and have >= need) or false }
+
+		if need > 0 then
+			goal.count = math.min(have, need) .. "/" .. need
+			goal.frac = math.min(1, have / need)
+		end
+
+		goals[#goals + 1] = goal
+	end
+
+	if #goals > 0 then return goals end
+
+	for _, text in ipairs(objs or {}) do
+		local name, a, b = SplitGoalText(text)
+
+		if a and b and b > 0 then
+			goals[#goals + 1] = { name = name, count = math.min(a, b) .. "/" .. b, done = a >= b, frac = math.min(1, a / b) }
+		else
+			goals[#goals + 1] = { name = name, done = false }
+		end
+	end
+
+	if #goals == 0 and id and HasQuestieDB() then
+		local ok, hints = pcall(QuestDB.Get, id, "objectivesText")
+
+		if ok and type(hints) == "table" then
+			for i = 1, math.min(#hints, 3) do
+				if type(hints[i]) == "string" and hints[i] ~= "" then
+					goals[#goals + 1] = { name = hints[i], done = false, hint = true }
+				end
+			end
+		end
+	end
+
+	return goals
+end
+
+-- Zeigt die Ziele einer Quest in der Zeile row ab dem Abstand top (Pixel von oben) und gibt die belegte Höhe zurück
+local function RenderGoals(row, goals, top)
+	for j, goal in ipairs(goals) do
+		local g = GetGoal(row, j)
+		g:ClearAllPoints()
+		g:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -(top + (j - 1) * GOAL_H))
+		g:SetSize(WIDTH - 24, GOAL_H)
+
+		if goal.done then
+			g.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+			g.icon:SetVertexColor(0.45, 0.9, 0.55)
+			g.text:SetTextColor(0.55, 0.78, 0.6)
+		else
+			g.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Up")
+			g.icon:SetVertexColor(0.75, 0.7, 0.6)
+			g.text:SetTextColor(goal.hint and 0.61 or 0.9, goal.hint and 0.57 or 0.87, goal.hint and 0.5 or 0.78)
+		end
+
+		g.text:SetText(goal.name)
+
+		if goal.count then
+			SetPill(g.pill, goal.done and "ok" or "warn", goal.count, 38, 14)
+			g.barBg:Show()
+			g.bar:Show()
+			g.bar:SetWidth(math.max(1, (WIDTH - 24 - 33 - 8) * (goal.frac or 0)))
+			if goal.done then g.bar:SetColorTexture(0.30, 0.76, 0.42, 1) else g.bar:SetColorTexture(0.94, 0.75, 0.29, 1) end
+		else
+			HidePill(g.pill)
+			g.barBg:Hide()
+			g.bar:Hide()
+		end
+
+		g:Show()
+	end
+
+	for j = #goals + 1, #row.goals do row.goals[j]:Hide() end
+
+	return #goals * GOAL_H
+end
+
+local HELP_ROW_H, HELP_HEAD_H = 26, 28   -- Questzeile, Kopfzeile
 local helpRows = {}
 local helpForce = false      -- per /sqh help erzwungen
 local helpDismissed = nil    -- weggeklickte Zusammenstellung (Mitglieder und Quests)
@@ -1258,11 +1417,6 @@ local function GetHelpRow(i)
 	row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 3)
 	row.fs:SetJustifyH("LEFT")
 	row.fs:SetWordWrap(false)
-	-- Einzelne Ziele ("Wolf getoetet: 3/8"), eine Zeile je Ziel unter dem Questnamen
-	row.objs = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
-	row.objs:SetJustifyH("LEFT")
-	row.objs:SetJustifyV("TOP")
-	row.objs:SetWordWrap(false)
 	-- Kopfzeile eines Mitglieds: Linksklick fluestert, Rechtsklick visiert an
 	row:SetScript("OnEnter", function(self)
 		if not self.member then return end
@@ -1288,66 +1442,76 @@ local function GetHelpRow(i)
 			if ChatFrame_SendTell then ChatFrame_SendTell(name) end
 		end
 	end)
-	-- Fortschrittsbalken am unteren Rand der Questzeile
-	row.barBg = row:CreateTexture(nil, "BORDER")
-	row.barBg:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 20, 3)
-	row.barBg:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 3)
-	row.barBg:SetHeight(3)
-	row.barBg:SetColorTexture(0.21, 0.19, 0.14, 1)
-	row.bar = row:CreateTexture(nil, "ARTWORK")
-	row.bar:SetPoint("BOTTOMLEFT", row.barBg, "BOTTOMLEFT")
-	row.bar:SetHeight(3)
+	-- Streifen am linken Rand und Trennlinie wie im Fenster "Quests in der Nähe"
+	row.accent = row:CreateTexture(nil, "ARTWORK")
+	row.accent:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+	row.accent:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+	row.accent:SetWidth(3)
+	row.divider = row:CreateTexture(nil, "BORDER")
+	row.divider:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+	row.divider:SetPoint("TOPRIGHT", row, "TOPRIGHT", 0, 0)
+	row.divider:SetHeight(1)
+	row.divider:SetColorTexture(0.21, 0.19, 0.14, 1)
+	row.goals = {}
 	helpRows[i] = row
 	return row
 end
 
-local function ConfigureHelpRow(row, e)
+-- Ziele einer Quest des Mitglieds: aus dem übermittelten Stand; ohne Einzelziele ein Balken mit dem Gesamtfortschritt
+local function HelpGoals(e)
+	local goals = GoalList(e.id, e.objs, nil)
+
+	if #goals == 0 then
+		local pct = e.ready and 100 or e.pct
+
+		if pct then
+			goals = { { name = T("Fortschritt", "Progress"), count = pct .. " %", frac = pct / 100, done = e.ready and true or false } }
+		end
+	elseif e.ready then
+		for _, goal in ipairs(goals) do
+			goal.done = true
+			if goal.count then goal.frac = 1 end
+		end
+	end
+
+	return goals
+end
+
+local function ConfigureHelpRow(row, e, goals)
 	local isHeader, isQuest = e.kind == "header", e.kind == "quest"
 	row.bg:SetShown(e.kind ~= "info")
 	row.bg:SetColorTexture(isHeader and 0.165 or 0.145, isHeader and 0.14 or 0.125, isHeader and 0.10 or 0.10, 1)
 	row.avatar:SetShown(isHeader)
 	row.name:SetShown(isHeader)
 	row.fs:SetShown(not isHeader)
-	row.barBg:SetShown(isQuest)
-	row.bar:SetShown(isQuest)
 	row.member = isHeader and e.name or nil
 	row:EnableMouse(isHeader)
-	row.objs:SetShown(isQuest and e.objs ~= nil and #e.objs > 0)
+	row.accent:SetShown(isQuest)
+	row.divider:SetShown(false)
 	row.pill.tex:ClearAllPoints()
-	if isQuest and e.objs and #e.objs > 0 then
+
+	if isQuest then
 		row.pill.tex:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, -5)
 	else
 		row.pill.tex:SetPoint("RIGHT", row, "RIGHT", -8, 0)
 	end
+
 	if isHeader then
 		local r, g, b = ClassColor(e.name)
 		SetClassIcon(row.avatar, e.name)
 		row.name:SetText(e.name)
 		row.name:SetTextColor(r, g, b)
 		SetPill(row.pill, "they", e.count .. " " .. T("Quests", "quests"), nil, 18)
+		for _, g2 in ipairs(row.goals) do g2:Hide() end
 	elseif isQuest then
+		row.fs:SetFontObject("SexyQuestHelperText")
 		row.fs:ClearAllPoints()
-		if e.objs and #e.objs > 0 then
-			-- Name oben, darunter die einzelnen Ziele (erfuellte gruen, offene grau)
-			row.fs:SetPoint("TOPLEFT", row, "TOPLEFT", 20, -6)
-			row.fs:SetWidth(WIDTH - 24 - 28 - 72)
-			row.objs:ClearAllPoints()
-			row.objs:SetPoint("TOPLEFT", row, "TOPLEFT", 20, -(6 + 14))
-			row.objs:SetWidth(WIDTH - 24 - 28)
-			local lines = {}
-			for _, text in ipairs(e.objs) do
-				local a, b = tostring(text):match("(%d+)/(%d+)")
-				local complete = e.ready or (a and b and tonumber(a) >= tonumber(b))
-				lines[#lines + 1] = (complete and "|cff7fd88f" or "|cff9b9180") .. text .. "|r"
-			end
-			row.objs:SetText(table.concat(lines, "\n"))
-		else
-			row.fs:SetWidth(0)
-			row.fs:SetPoint("LEFT", row, "LEFT", 20, 3)
-			row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 3)
-		end
+		row.fs:SetPoint("TOPLEFT", row, "TOPLEFT", 10, -6)
+		row.fs:SetWidth(WIDTH - 24 - 28 - 72)
 		row.fs:SetText(e.title or QuestName(e.id))
 		row.fs:SetTextColor(0.95, 0.92, 0.86)
+		row.accent:SetColorTexture(e.ready and 0.30 or 0.94, e.ready and 0.76 or 0.75, e.ready and 0.42 or 0.29, 1)
+
 		if e.ready then
 			SetPill(row.pill, "ok", T("Bereit", "Ready"), 60, 16)
 		elseif e.pct then
@@ -1355,16 +1519,17 @@ local function ConfigureHelpRow(row, e)
 		else
 			SetPill(row.pill, "grey", "?", 60, 16)
 		end
-		local pct = e.ready and 100 or (e.pct or 0)
-		row.bar:SetWidth(math.max(1, (WIDTH - 24 - 28) * pct / 100))
-		if e.ready then row.bar:SetColorTexture(0.30, 0.76, 0.42, 1) else row.bar:SetColorTexture(0.94, 0.75, 0.29, 1) end
+
+		RenderGoals(row, goals or {}, HELP_ROW_H - 2)
 	else
+		row.fs:SetFontObject("SexyQuestHelperSmall")
 		row.fs:ClearAllPoints()
 		row.fs:SetWidth(0)
 		row.fs:SetPoint("LEFT", row, "LEFT", 8, 0)
 		row.fs:SetPoint("RIGHT", row, "RIGHT", -8, 0)
 		row.fs:SetText("|cff9b9180" .. e.text .. "|r")
 		HidePill(row.pill)
+		for _, g2 in ipairs(row.goals) do g2:Hide() end
 	end
 end
 
@@ -1459,13 +1624,14 @@ function RefreshHelp()
 	local y = BAND_H + 8
 	for i, e in ipairs(entries) do
 		local row = GetHelpRow(i)
+		local goals = e.kind == "quest" and HelpGoals(e) or nil
 		local h = (e.kind == "header" and HELP_HEAD_H) or (e.kind == "quest" and HELP_ROW_H) or INFO_H
-		if e.kind == "quest" and e.objs and #e.objs > 0 then h = HELP_ROW_H + 6 + #e.objs * HELP_OBJ_H end
+		if goals and #goals > 0 then h = HELP_ROW_H + 4 + #goals * GOAL_H + 4 end
 		if e.kind == "header" and i > 1 then y = y + CARD_GAP end
 		row:ClearAllPoints()
 		row:SetPoint("TOPLEFT", helpUI, "TOPLEFT", 12, -y)
 		row:SetSize(WIDTH - 24, h)
-		ConfigureHelpRow(row, e)
+		ConfigureHelpRow(row, e, goals)
 		row:Show()
 		y = y + h
 	end
@@ -1482,11 +1648,473 @@ function RefreshHelp()
 	helpUI:Show()
 end
 
--- Beide Fenster zusammen aktualisieren
+---------------------------------------------------------------------------
+-- Drittes Fenster: Quests in der Naehe. Aus den Zielen deiner offenen Quests (QuestieDB: Kreaturen, Objekte,
+-- Gegenstaende ueber ihre Droppquellen, Erkundungsbereiche) und deren Spawn-Punkten im aktuellen Gebiet wird
+-- bestimmt, welche Quests gerade in Reichweite einer Zielstelle liegen.
+---------------------------------------------------------------------------
+
+local NEAR_ROW_H = 26   -- Kopfzeile einer Quest
+local nearRows = {}
+local nearForce = false       -- per /sqh near erzwungen
+local nearDismissed = nil     -- weggeklickte Zusammenstellung
+local nearKnown = {}          -- Quests, die beim letzten Durchlauf schon in der Naehe waren (fuer den Ton)
+local pointsCache = {}        -- [Quest] = { zoneKey, points = { {x, y}, ... }, known = Zahl der Punkte aus QuestieDB }
+local progressAt = {}         -- [Quest] = GetTime() des letzten Fortschritts (für Quests ohne festen Ort)
+local areaNames = {}          -- [AreaId] = Name oder false
+
+local function AreaMatches(areaId, wanted)
+	local name = areaNames[areaId]
+
+	if name == nil then
+		local ok, value = pcall(function()
+			if C_Map and C_Map.GetAreaInfo then return C_Map.GetAreaInfo(areaId) end
+		end)
+
+		name = ok and value or false
+		areaNames[areaId] = name
+	end
+
+	return name and wanted[name] and true or false
+end
+
+-- Spawn-Punkte (Prozent der Zonenkarte) im gesuchten Gebiet sammeln; mit Obergrenze gegen riesige Droplisten
+local function AddSpawns(points, spawns, wanted)
+	if type(spawns) ~= "table" then return end
+
+	for areaId, list in pairs(spawns) do
+		if #points < 1500 and AreaMatches(areaId, wanted) then
+			for _, c in ipairs(list) do
+				if type(c) == "table" and c[1] and c[2] then points[#points + 1] = c end
+			end
+		end
+	end
+end
+
+local function QuestPoints(id, wanted, zoneKey)
+	local cached = pointsCache[id]
+	if cached and cached.zoneKey == zoneKey then return cached.points, cached.known end
+
+	local points = {}
+
+	if HasQuestieDB() then pcall(function()
+		local obj = QuestDB.Get(id, "objectives") or {}
+		local function npc(npcId) AddSpawns(points, NpcDB.Get(npcId, "spawns"), wanted) end
+		local function object(objectId) AddSpawns(points, ObjectDB.Get(objectId, "spawns"), wanted) end
+
+		for _, e in ipairs(obj[1] or {}) do npc(e[1]) end            -- Kreaturen
+		for _, e in ipairs(obj[2] or {}) do object(e[1]) end         -- Objekte
+
+		for _, e in ipairs(obj[3] or {}) do                          -- Gegenstaende: ueber ihre Droppquellen
+			local npcs = ItemDB.Get(e[1], "npcDrops") or {}
+			for i = 1, math.min(#npcs, 40) do npc(npcs[i]) end
+			local objects = ItemDB.Get(e[1], "objectDrops") or {}
+			for i = 1, math.min(#objects, 20) do object(objects[i]) end
+		end
+
+		for _, e in ipairs(obj[5] or {}) do                          -- Sammel-Kreaturen (Kill Credit)
+			for _, n in ipairs(e[1] or {}) do npc(n) end
+		end
+
+		local trigger = QuestDB.Get(id, "triggerEnd")                -- Erkundungsbereich
+		if type(trigger) == "table" then AddSpawns(points, trigger[2], wanted) end
+	end) end
+
+	local known = #points   -- Orte aus QuestieDB; 0 heißt: kein richtiger Ort bekannt
+
+	-- Gelernte Orte: dort, wo der Fortschritt dieser Quest gestiegen ist (z. B. nach dem ersten Kill)
+	local learned = SexyQuestHelperDB.learned and SexyQuestHelperDB.learned[id]
+	if learned and learned[zoneKey] then
+		for _, c in ipairs(learned[zoneKey]) do points[#points + 1] = c end
+	end
+
+	pointsCache[id] = { zoneKey = zoneKey, points = points, known = known }
+	return points, known
+end
+
+-- Zonenkarte des Spielers (von einer Unterkarte aus nach oben) und ihr Name
+local function ZoneMap()
+	if not (C_Map and C_Map.GetBestMapForUnit and C_Map.GetMapInfo) then return end
+	local mapID = C_Map.GetBestMapForUnit("player")
+	local zoneType = (Enum and Enum.UIMapType and Enum.UIMapType.Zone) or 3
+
+	for _ = 1, 5 do
+		if not mapID then return end
+		local info = C_Map.GetMapInfo(mapID)
+		if not info then return end
+		if info.mapType == zoneType then return mapID, info.name end
+		mapID = info.parentMapID
+	end
+end
+
+-- Quests, deren Zielstellen im Umkreis liegen: { { id, dist }, ... } nach Entfernung sortiert
+local function ComputeNear()
+	local list = {}
+
+	local mapID, mapName = ZoneMap()
+	if not mapID then return list end
+
+	local pos = C_Map.GetPlayerMapPosition(mapID, "player")
+	if not pos then return list end
+
+	local px, py = pos:GetXY()
+	if not (px and py) or (px == 0 and py == 0) then return list end
+
+	local width, height = 4000, 3000
+	if C_Map.GetMapWorldSize then
+		local w, h = C_Map.GetMapWorldSize(mapID)
+		if w and h and w > 0 and h > 0 then width, height = w, h end
+	end
+
+	local wanted = { [GetRealZoneText() or ""] = true, [mapName or ""] = true }
+	local radius = cfg.nearRadius
+
+	local now = GetTime()
+	local hold = (cfg.nearHold or 3) * 60
+
+	for id in pairs(myIds) do
+		local p = myProgress[id]
+		local points, known = QuestPoints(id, wanted, mapID)
+		local best
+
+		for _, c in ipairs(points) do
+			local dx, dy = (px - c[1] / 100) * width, (py - c[2] / 100) * height
+			local d = math.sqrt(dx * dx + dy * dy)
+			if not best or d < best then best = d end
+		end
+
+		-- Quest ohne richtigen Ort (QuestieDB kennt keinen): nach einem Fortschritt bleibt sie ein paar Minuten
+		-- in der Liste, egal wo man steht; danach verschwindet sie
+		local held = known == 0 and progressAt[id] and (now - progressAt[id]) < hold
+
+		if best and best <= radius and not (p and p.ready) then
+			list[#list + 1] = { id = id, dist = best }
+		elseif held then
+			list[#list + 1] = { id = id, dist = best, held = true, age = now - progressAt[id] }
+		end
+	end
+
+	table.sort(list, function(a, b)
+		if a.held ~= b.held then return not a.held end   -- Quests in Reichweite zuerst
+		return (a.dist or 1e9) < (b.dist or 1e9)
+	end)
+	return list
+end
+
+-- Beim Spielen lernen: Steigt der Fortschritt einer Quest, ist man in ihrem Bereich. Position (in Prozent der
+-- Zonenkarte) merken, je Quest und Karte höchstens 40 Punkte, nahe Punkte werden zusammengefasst.
+local function LearnQuestPoint(id)
+	local mapID = ZoneMap()
+	if not mapID then return end
+	local pos = C_Map.GetPlayerMapPosition(mapID, "player")
+	if not pos then return end
+	local x, y = pos:GetXY()
+	if not (x and y) or (x == 0 and y == 0) then return end
+	x, y = x * 100, y * 100
+
+	SexyQuestHelperDB.learned = SexyQuestHelperDB.learned or {}
+	local byMap = SexyQuestHelperDB.learned[id] or {}
+	SexyQuestHelperDB.learned[id] = byMap
+	local list = byMap[mapID] or {}
+	byMap[mapID] = list
+
+	for _, c in ipairs(list) do
+		if math.abs(c[1] - x) < 0.4 and math.abs(c[2] - y) < 0.4 then return end
+	end
+
+	if #list >= 40 then table.remove(list, 1) end
+	list[#list + 1] = { x, y }
+end
+
+local function GetNearRow(i)
+	local row = nearRows[i]
+	if row then return row end
+
+	row = CreateFrame("Button", nil, nearUI)
+	row:RegisterForClicks("LeftButtonUp")
+	row.bg = row:CreateTexture(nil, "BACKGROUND")
+	row.bg:SetAllPoints()
+	row.bg:SetColorTexture(0.145, 0.125, 0.10, 1)
+	row.hl = row:CreateTexture(nil, "HIGHLIGHT")
+	row.hl:SetAllPoints()
+	row.hl:SetColorTexture(1, 1, 1, 0.08)
+	-- Wie im Hauptfenster: Tooltip mit dem Questtext, Klick öffnet die Quest im Questlog, Umschalt-Klick verlinkt sie
+	row:SetScript("OnEnter", function(self)
+		if not self.questId then return end
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		local ok = pcall(GameTooltip.SetHyperlink, GameTooltip, ("quest:%d:%d"):format(self.questId, UnitLevel("player")))
+		if not ok then
+			GameTooltip:ClearLines()
+			GameTooltip:AddLine(QuestName(self.questId))
+		end
+		GameTooltip:AddLine(T("Klick: im Questlog öffnen", "Click: open in quest log"), 0.6, 0.6, 0.6)
+		GameTooltip:AddLine(T("Shift-Klick: Link in den Chat", "Shift-click: link into chat"), 0.6, 0.6, 0.6)
+		GameTooltip:Show()
+	end)
+	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	row:SetScript("OnClick", function(self)
+		if self.questId then OpenQuest(self.questId) end
+	end)
+	row.pill = MakePill(row)
+	row.pill.tex:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, -5)
+	row.fs = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperText")
+	row.fs:SetPoint("TOPLEFT", row, "TOPLEFT", 10, -6)
+	row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 0)
+	row.fs:SetJustifyH("LEFT")
+	row.fs:SetWordWrap(false)
+	-- Streifen am linken Rand: gelb, solange Ziele offen sind, grün, wenn alle erledigt sind
+	row.accent = row:CreateTexture(nil, "ARTWORK")
+	row.accent:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+	row.accent:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+	row.accent:SetWidth(3)
+	-- dünne Trennlinie oben
+	row.divider = row:CreateTexture(nil, "BORDER")
+	row.divider:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+	row.divider:SetPoint("TOPRIGHT", row, "TOPRIGHT", 0, 0)
+	row.divider:SetHeight(1)
+	row.divider:SetColorTexture(0.21, 0.19, 0.14, 1)
+	row.goals = {}
+	nearRows[i] = row
+	return row
+end
+
+local function BuildNear()
+	if testMode then
+		return {
+			{ title = T("Beispiel-Quest", "Sample quest"), dist = 24,
+				objs = { T("Wölfe getötet: 8/8", "Wolves slain: 8/8"), T("Fell: 0/1", "Pelt: 0/1") } },
+			{ title = T("Noch eine Quest", "Another quest"), dist = 51, objs = { T("Beutel gefunden: 0/1", "Pouch found: 0/1") } },
+		}, "test"
+	end
+
+	local entries, ids = {}, {}
+
+	for _, n in ipairs(ComputeNear()) do
+		local p = myProgress[n.id]
+		entries[#entries + 1] = { id = n.id, dist = n.dist, held = n.held, age = n.age, objs = p and p.objs, goals = p and p.goals }
+		ids[#ids + 1] = n.id
+	end
+
+	return entries, table.concat(ids, ",")
+end
+
+-- /sqh near debug: zeigt, warum das Fenster erscheint oder nicht
+local function DebugNear()
+	local function say(text) print("|cffe8c26aSQH near|r " .. text) end
+	say("Fenster eingeschaltet: " .. tostring(cfg.nearEnabled) .. ", Reichweite " .. cfg.nearRadius .. " m, scanReady " .. tostring(scanReady))
+	say("QuestieDB geladen: " .. tostring(HasQuestieDB() and true or false))
+	local mapID, mapName = ZoneMap()
+	say("Zonenkarte: " .. tostring(mapID) .. " (" .. tostring(mapName) .. "), GetRealZoneText: " .. tostring(GetRealZoneText()))
+	if not mapID then return end
+	local pos = C_Map.GetPlayerMapPosition(mapID, "player")
+	local px, py
+	if pos then px, py = pos:GetXY() end
+	say("Position: " .. tostring(px and (px * 100)) .. " / " .. tostring(py and (py * 100)))
+	local w, h
+	if C_Map.GetMapWorldSize then w, h = C_Map.GetMapWorldSize(mapID) end
+	say("Kartengröße (Yards): " .. tostring(w) .. " x " .. tostring(h))
+	local wanted = { [GetRealZoneText() or ""] = true, [mapName or ""] = true }
+	local count = 0
+	for id in pairs(myIds) do
+		count = count + 1
+		local points = QuestPoints(id, wanted, mapID)
+		local best
+		if px and py then
+			for _, c in ipairs(points) do
+				local d = math.sqrt(((px - c[1] / 100) * (w or 4000)) ^ 2 + ((py - c[2] / 100) * (h or 3000)) ^ 2)
+				if not best or d < best then best = d end
+			end
+		end
+		say(("%s [%d]: %d Punkte, nächster %s"):format(QuestName(id), id, #points, best and (math.floor(best) .. " m") or "-"))
+	end
+	if count == 0 then say("Keine Quests deines Gebiets im Log (myIds leer).") end
+end
+
+function RefreshNear()
+	if not nearUI then return end
+
+	local entries, sig = BuildNear()
+	nearUI.sig = sig
+	local wanted = cfg.nearEnabled and scanReady
+
+	-- Ton, wenn eine Quest neu in Reichweite kommt
+	if wanted and cfg.nearSound and not testMode then
+		for _, e in ipairs(entries) do
+			if e.id and not nearKnown[e.id] then
+				pcall(PlaySound, (SOUNDKIT and SOUNDKIT.IG_QUEST_LIST_OPEN) or 882)
+				break
+			end
+		end
+	end
+
+	wipe(nearKnown)
+	for _, e in ipairs(entries) do if e.id then nearKnown[e.id] = true end end
+
+	local auto = wanted and #entries > 0 and sig ~= nearDismissed
+	if not (nearForce or testMode or auto) then
+		nearUI:Hide()
+		return
+	end
+
+	local y = BAND_H + 8
+
+	if #entries == 0 then
+		local row = GetNearRow(1)
+		row:ClearAllPoints()
+		row:SetPoint("TOPLEFT", nearUI, "TOPLEFT", 12, -y)
+		row:SetSize(WIDTH - 24, INFO_H)
+		row.bg:Hide()
+		row.questId = nil
+		row:EnableMouse(false)
+		HidePill(row.pill)
+		row.accent:Hide()
+		row.divider:Hide()
+		for _, g in ipairs(row.goals) do g:Hide() end
+		row.fs:SetText("|cff9b9180" .. (HasQuestieDB() and T("Keine Quest-Ziele in der Nähe.", "No quest goals nearby.")
+			or T("Keine Ziele bekannt. Ohne QuestieDB lernt das Addon die Orte beim Spielen.", "No goals known. Without QuestieDB the addon learns the places while you play.")) .. "|r")
+		row:Show()
+		y = y + INFO_H
+
+		for i = 2, #nearRows do nearRows[i]:Hide() end
+	else
+		for i, e in ipairs(entries) do
+			local row = GetNearRow(i)
+			local goals = GoalList(e.id, e.objs, e.goals)
+			local allDone = (#goals > 0) or (e.id and myProgress[e.id] and myProgress[e.id].ready)
+
+			for _, goal in ipairs(goals) do
+				if not goal.done then allDone = false end
+			end
+
+			local h = NEAR_ROW_H + ((#goals > 0) and (4 + #goals * GOAL_H) or 0) + 4
+
+			row:ClearAllPoints()
+			row:SetPoint("TOPLEFT", nearUI, "TOPLEFT", 12, -y)
+			row:SetSize(WIDTH - 24, h)
+			row.bg:Show()
+			row.divider:SetShown(i > 1)
+			row.accent:Show()
+			if allDone then row.accent:SetColorTexture(0.30, 0.76, 0.42, 1) else row.accent:SetColorTexture(0.94, 0.75, 0.29, 1) end
+			row.questId = e.id
+			row:EnableMouse(e.id ~= nil)
+			row.fs:SetText(e.title or QuestName(e.id))
+			row.fs:SetTextColor(0.95, 0.92, 0.86)
+			if e.held and not (e.dist and e.dist <= cfg.nearRadius) then
+				-- ohne festen Ort: wie lange der Fortschritt her ist
+				local minutes = math.floor((e.age or 0) / 60)
+				SetPill(row.pill, "grey", minutes < 1 and T("gerade eben", "just now") or T(minutes .. " min", minutes .. " min ago"), nil, 16)
+			else
+				SetPill(row.pill, "they", math.floor(e.dist + 0.5) .. " m", nil, 16)
+			end
+
+			RenderGoals(row, goals, NEAR_ROW_H - 2)
+			row:Show()
+			y = y + h + 2
+		end
+
+		for i = #entries + 1, #nearRows do nearRows[i]:Hide() end
+	end
+
+	local newHeight = y + 10
+	local db = SexyQuestHelperDB.nearMode
+
+	if db and db.x and db.y and not SEM:IsMoving(nearUI) then
+		SEM:SetPosition(nearUI, db.x, db.y - (newHeight - (db.anchoredHeight or newHeight)))
+		db.anchoredHeight = newHeight
+	end
+
+	nearUI:SetHeight(newHeight)
+	nearUI:Show()
+end
+
+local function CreateNearUI()
+	local f = CreateFrame("Frame", "SexyQuestHelperNearFrame", UIParent, "BackdropTemplate")
+	f:SetSize(WIDTH, 60)
+	f:SetFrameStrata("MEDIUM")
+	f:SetClampedToScreen(true)
+	f:SetMovable(true)
+	f:EnableMouse(true)
+	f:RegisterForDrag("LeftButton")
+	f:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		edgeSize = 12,
+		insets = { left = 3, right = 3, top = 3, bottom = 3 },
+	})
+	f:SetBackdropColor(0.08, 0.065, 0.05, 0.96)
+	f:SetBackdropBorderColor(0.42, 0.34, 0.15, 1)
+
+	-- Standardposition: links neben dem Hauptfenster (Oberkanten gleich)
+	local db = SexyQuestHelperDB.nearMode
+
+	if not db then
+		db = {}
+		SexyQuestHelperDB.nearMode = db
+		local main = SexyQuestHelperDB.editMode or {}
+		local mx, my = main.x or 400, main.y or 300
+		local top = my + (main.anchoredHeight or 60)
+		db.x = math.max(0, mx - WIDTH - 12)
+		db.y = top - 60
+		db.anchoredHeight = 60
+	end
+
+	f:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", db.x, db.y)
+	f:SetScript("OnDragStart", f.StartMoving)
+	f:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		SEM:SetPosition(self, self:GetLeft(), self:GetBottom())
+		db.anchoredHeight = self:GetHeight()
+	end)
+
+	f.band = f:CreateTexture(nil, "BACKGROUND")
+	f.band:SetPoint("TOPLEFT", f, "TOPLEFT", 3, -3)
+	f.band:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -3)
+	f.band:SetHeight(BAND_H - 3)
+	f.band:SetColorTexture(0.15, 0.12, 0.07, 1)
+	f.title = f:CreateFontString(nil, "OVERLAY", "SexyQuestHelperTitle")
+	f.title:SetPoint("TOPLEFT", 12, -9)
+	f.title:SetText(T("Quests in der Nähe", "Quests nearby"))
+
+	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+	close:SetPoint("TOPRIGHT", 2, 2)
+	close:SetScript("OnClick", function()
+		nearForce = false
+		nearDismissed = f.sig
+		f:Hide()
+	end)
+
+	f:Hide()
+	SEM:Register(f, {
+		name = "SexyQuestHelper: " .. T("Quests in der Nähe", "Quests nearby"),
+		db = db,
+		settings = {
+			{ type = "link", name = "SexyQuestHelper", frame = function() return ui end },
+			{ type = "header", name = T("Quests in der Nähe", "Quests nearby"), id = "near" },
+			{ type = "check", name = T("Fenster einschalten (öffnet sich in Zielnähe)", "Turn the window on (opens near goals)"),
+				get = function() return cfg.nearEnabled end,
+				set = function(v) cfg.nearEnabled = v and true or false; RefreshNear() end },
+			{ type = "slider", name = T("Reichweite", "Range"), min = 20, max = 200, step = 10,
+				get = function() return cfg.nearRadius end,
+				set = function(v) cfg.nearRadius = v; RefreshNear() end,
+				format = function(v) return v .. " m" end },
+			{ type = "slider", name = T("Quest ohne festen Ort bleibt (Minuten)", "Quest without a fixed place stays (minutes)"), min = 1, max = 10, step = 1,
+				get = function() return cfg.nearHold end,
+				set = function(v) cfg.nearHold = v; RefreshNear() end },
+			{ type = "check", name = T("Ton, wenn eine Quest neu in Reichweite kommt", "Sound when a quest comes into range"),
+				get = function() return cfg.nearSound end,
+				set = function(v) cfg.nearSound = v and true or false end },
+		},
+		onMoved = function(self) db.anchoredHeight = self:GetHeight() end,
+	})
+	return f
+end
+
+-- Alle Fenster zusammen aktualisieren
 local RefreshMain = Refresh
 function Refresh()
 	RefreshMain()
 	RefreshHelp()
+	RefreshNear()
 end
 
 ---------------------------------------------------------------------------
@@ -1501,7 +2129,17 @@ local function DoScan(forceBroadcast)
 		return
 	end
 	myZone, myIds, myTitles, myZoneKey = zone, ids, titles, key
+	local previous = myProgress
 	myProgress = ComputeProgress(ids)
+	-- Fortschritt gestiegen (z. B. erster Kill): Ort als Bereich dieser Quest merken
+	for id, p in pairs(myProgress) do
+		local o = previous[id]
+		if o and p.pct > o.pct then
+			progressAt[id] = GetTime()
+			pcall(LearnQuestPoint, id)
+		end
+	end
+	wipe(pointsCache)
 	ignoreUntil = GetTime() + IGNORE_AFTER_SCAN
 
 	local signature = myZoneKey .. ":" .. table.concat(SortedIds(myIds), ",")
@@ -1557,6 +2195,11 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		cfg = setmetatable(SexyQuestHelperDB.cfg, { __index = DEFAULTS })
 		ui = CreateUI() -- zuerst, damit /sqh auch bei spaeteren Fehlern funktioniert
 		helpUI = CreateHelpUI()
+		nearUI = CreateNearUI()
+		-- Position ändert sich laufend: regelmäßig prüfen (nur, wenn das Fenster an ist oder offen steht)
+		C_Timer.NewTicker(1.5, function()
+			if cfg.nearEnabled or nearForce or testMode or (nearUI and nearUI:IsShown()) then RefreshNear() end
+		end)
 		local register = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or RegisterAddonMessagePrefix
 		local regOk, regResult = pcall(register, PREFIX)
 		prefixOk = regOk and tostring(regResult) or ("FEHLER: " .. tostring(regResult))
@@ -1682,6 +2325,16 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 				list(DbField(id, "preQuestSingle")), list(DbField(id, "preQuestGroup")), list(DbField(id, "exclusiveTo")),
 				tostring(DbField(id, "nextQuestInChain")), tostring(DbField(id, "requiredLevel"))))
 		end
+		return
+	end
+	if arg == "near debug" then
+		DebugNear()
+		return
+	end
+	if arg == "near" or arg == "nähe" then
+		nearForce = not (nearUI and nearUI:IsShown())
+		if not nearForce then nearDismissed = nearUI and nearUI.sig end
+		RefreshNear()
 		return
 	end
 	if arg == "help" or arg == "helfen" then

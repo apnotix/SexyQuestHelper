@@ -13,6 +13,7 @@ Works on **World of Warcraft: Forever** and **Retail**. Styled like the other Se
 - 🔔 **Shows up when it matters** - the window opens when quests differ and closes when everyone is in sync. Close it to dismiss the current differences; it returns when they change.
 - 👥 **Differences per player** - which quests *you lack* and which *they lack*.
 - 🤝 **Help your group** - a second window shows quests you have already finished that a member still has, with their single goals and progress. Click a member to whisper or target. Optional, switched on in Edit Mode. Handy when you want to help someone along.
+- 📍 **Quests nearby** - an optional third window lists your open quests whose goals are within range of where you stand, with the single goals. Uses the QuestieDB addon for the goal positions.
 - 📜 **Quest tooltips and links** - hover for the tooltip, click to open the quest in your log, Shift-click to link it in chat.
 - 🤝 **Share button** - share a quest with the group right from the list (greyed out in combat).
 - 🗺️ **Zone based** - only the quests of your current zone are compared.
