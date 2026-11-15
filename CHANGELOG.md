@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- "Quests nearby" shows the progress of your group members: under each goal small labels in class color with their state ("Anna 3/8", a check mark when done); members without single goals show percent under the quest title, finished or turned in with a check mark. Members without the addon show a grey "has the quest" when the game knows it (C_QuestLog.IsUnitOnQuest). Uses the data the addon already sends for "Help your group" (no new messages). Can be turned off in the Edit Mode dialog ("Show the progress of group members")
 - "Quests nearby": a small button "Hidden: N" in the header opens a dialog that lists all hidden quests, each with a "Show" button, plus "Show all" (scrolls with the mouse wheel, Esc closes it). It replaces the grey "N hidden" line at the bottom of the window
 - "Help your group": long quest titles, goal texts and notes now wrap onto further lines inside the window instead of running past its right edge; the rows grow with the text. Long goal texts in "Quests nearby" wrap the same way
 - Right-click a quest to hide it now also works in the main window and in "Help your group", not only in "Quests nearby". There is one shared list of hidden quests for all three windows; each window's Edit Mode dialog has the "Hidden quests" section to show them again. In chat: `/sqh hidden` and `/sqh show <ID|all>` (the old `/sqh near hidden` / `/sqh near show` still work)
