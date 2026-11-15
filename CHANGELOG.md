@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- "Quests nearby": the list scrolls with the mouse wheel once it is taller than a set height (default 400 px, 150-900 in the Edit Mode dialog), with a thin bar at the right showing the position; the window no longer runs off the screen
 - "Quests nearby": right-click a quest to hide it from the window (saved across sessions, for all characters), for quests that are "nearby" everywhere such as the pages of "The Green Hills of Stranglethorn". A grey line at the bottom of the window shows how many are hidden; the Edit Mode dialog has a section "Hidden quests" with a button per quest to show it again and "Show all again". In chat: `/sqh near hidden` lists them, `/sqh near show <ID>` or `/sqh near show all` brings them back
 - "Quests nearby" on non-English clients (e.g. German): goal areas are now matched to your zone by map ID via Questie's zone data when Questie is loaded, instead of only by the localized zone name; name matching ignores case and stray spaces. `/sqh near debug` also lists the goal areas (ID, name, map) of quests that found no points
 
