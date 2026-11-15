@@ -504,8 +504,12 @@ local function HiddenList()
 	return list
 end
 
+local hiddenFrame              -- eigener Dialog "Ausgeblendete Quests" (Knopf oben in "Quests in der Nähe")
+local RefreshHiddenFrame
+
 local function RefreshHiddenDialog()
 	if SEM.dialog and SEM.dialog:IsShown() then SEM:RebuildDialog() end
+	if hiddenFrame and hiddenFrame:IsShown() then RefreshHiddenFrame() end
 end
 
 local function HideQuest(id)
@@ -549,6 +553,151 @@ local function HiddenSettings()
 				name = T("Alle wieder einblenden", "Show all again"), onClick = function() UnhideQuest(nil) end }
 			return rows
 		end }
+end
+
+-- Dialog "Ausgeblendete Quests": je Quest eine Zeile mit "Einblenden", unten "Alle einblenden".
+-- Entsteht beim ersten Öffnen; ESC schließt ihn.
+local HIDDEN_ROW_H, HIDDEN_MAX_ROWS = 24, 12
+
+local function FlatButton(parent, text, width, height, r, g, b)
+	local btn = CreateFrame("Button", nil, parent)
+	btn:SetSize(width, height)
+	btn.bg = btn:CreateTexture(nil, "BACKGROUND")
+	btn.bg:SetAllPoints()
+	btn.bg:SetColorTexture(r or 0.184, g or 0.42, b or 0.235, 1)
+	btn.hl = btn:CreateTexture(nil, "HIGHLIGHT")
+	btn.hl:SetAllPoints()
+	btn.hl:SetColorTexture(1, 1, 1, 0.25)
+	btn.text = btn:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
+	btn.text:SetAllPoints()
+	btn.text:SetText(text)
+	btn:RegisterForClicks("LeftButtonUp")
+	return btn
+end
+
+local function CreateHiddenFrame()
+	local f = CreateFrame("Frame", "SexyQuestHelperHiddenFrame", UIParent, "BackdropTemplate")
+	f:SetSize(320, 100)
+	f:SetPoint("CENTER")
+	f:SetFrameStrata("DIALOG")
+	f:SetClampedToScreen(true)
+	f:SetMovable(true)
+	f:EnableMouse(true)
+	f:RegisterForDrag("LeftButton")
+	f:SetScript("OnDragStart", f.StartMoving)
+	f:SetScript("OnDragStop", f.StopMovingOrSizing)
+	f:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		edgeSize = 12,
+		insets = { left = 3, right = 3, top = 3, bottom = 3 },
+	})
+	f:SetBackdropColor(0.08, 0.065, 0.05, 0.96)
+	f:SetBackdropBorderColor(0.42, 0.34, 0.15, 1)
+
+	f.band = f:CreateTexture(nil, "BACKGROUND")
+	f.band:SetPoint("TOPLEFT", f, "TOPLEFT", 3, -3)
+	f.band:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -3)
+	f.band:SetHeight(27)
+	f.band:SetColorTexture(0.15, 0.12, 0.07, 1)
+	f.title = f:CreateFontString(nil, "OVERLAY", "SexyQuestHelperTitle")
+	f.title:SetPoint("TOPLEFT", 12, -9)
+	f.title:SetText(T("Ausgeblendete Quests", "Hidden quests"))
+
+	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+	close:SetPoint("TOPRIGHT", 2, 2)
+	close:SetScript("OnClick", function() f:Hide() end)
+
+	-- Liste im Scrollbereich (Mausrad)
+	f.scroll = CreateFrame("ScrollFrame", nil, f)
+	f.scroll:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -38)
+	f.scroll:SetSize(300, HIDDEN_ROW_H)
+	f.content = CreateFrame("Frame", nil, f.scroll)
+	f.content:SetSize(300, HIDDEN_ROW_H)
+	f.scroll:SetScrollChild(f.content)
+	f.scroll:EnableMouseWheel(true)
+	f.scroll:SetScript("OnMouseWheel", function(self, delta)
+		local range = math.max(0, f.content:GetHeight() - self:GetHeight())
+		self:SetVerticalScroll(math.min(math.max(self:GetVerticalScroll() - delta * HIDDEN_ROW_H * 2, 0), range))
+	end)
+
+	f.empty = f:CreateFontString(nil, "OVERLAY", "SexyQuestHelperText")
+	f.empty:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -42)
+	f.empty:SetPoint("RIGHT", f, "RIGHT", -14, 0)
+	f.empty:SetJustifyH("LEFT")
+	f.empty:SetTextColor(0.61, 0.57, 0.50)
+	f.empty:SetText(T("Keine Quests ausgeblendet. Rechtsklick auf eine Quest blendet sie aus.",
+		"No hidden quests. Right-click a quest to hide it."))
+
+	f.all = FlatButton(f, T("Alle einblenden", "Show all"), 110, 20)
+	f.all:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -10, 10)
+	f.all:SetScript("OnClick", function() UnhideQuest(nil) end)
+
+	f.rows = {}
+	f:Hide()
+	tinsert(UISpecialFrames, "SexyQuestHelperHiddenFrame")
+	return f
+end
+
+local function GetHiddenRow(i)
+	local row = hiddenFrame.rows[i]
+	if row then return row end
+
+	row = CreateFrame("Frame", nil, hiddenFrame.content)
+	row:SetSize(300, HIDDEN_ROW_H - 2)
+	row.bg = row:CreateTexture(nil, "BACKGROUND")
+	row.bg:SetAllPoints()
+	row.bg:SetColorTexture(0.145, 0.125, 0.10, 1)
+	row.show = FlatButton(row, T("Einblenden", "Show"), 76, HIDDEN_ROW_H - 8)
+	row.show:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+	row.show:SetScript("OnClick", function() if row.questId then UnhideQuest(row.questId) end end)
+	row.fs = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
+	row.fs:SetPoint("LEFT", row, "LEFT", 8, 0)
+	row.fs:SetPoint("RIGHT", row.show, "LEFT", -6, 0)
+	row.fs:SetJustifyH("LEFT")
+	row.fs:SetWordWrap(false)
+	hiddenFrame.rows[i] = row
+	return row
+end
+
+function RefreshHiddenFrame()
+	local f = hiddenFrame
+	local list = HiddenList()
+
+	for i, h in ipairs(list) do
+		local row = GetHiddenRow(i)
+		row.questId = h.id
+		row.fs:SetText(h.name)
+		row:ClearAllPoints()
+		row:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, -(i - 1) * HIDDEN_ROW_H)
+		row:Show()
+	end
+	for i = #list + 1, #f.rows do f.rows[i]:Hide() end
+
+	local listH = math.max(1, #list * HIDDEN_ROW_H)
+	local viewH = math.min(listH, HIDDEN_MAX_ROWS * HIDDEN_ROW_H)
+	f.content:SetHeight(listH)
+	f.scroll:SetHeight(viewH)
+	f.scroll:SetVerticalScroll(math.min(f.scroll:GetVerticalScroll(), math.max(0, listH - viewH)))
+
+	f.empty:SetShown(#list == 0)
+	f.scroll:SetShown(#list > 0)
+	f.all:SetShown(#list > 0)
+	if #list == 0 then
+		f:SetHeight(38 + 40)
+	else
+		f:SetHeight(38 + viewH + 8 + 20 + 10)
+	end
+end
+
+local function ToggleHiddenFrame()
+	hiddenFrame = hiddenFrame or CreateHiddenFrame()
+	if hiddenFrame:IsShown() then
+		hiddenFrame:Hide()
+	else
+		RefreshHiddenFrame()
+		hiddenFrame:Show()
+	end
 end
 
 local function QuestLogIndex(id)
@@ -2228,17 +2377,9 @@ function RefreshNear()
 	nearUI:UpdateScroll()
 	y = BAND_H + viewH
 
-	-- Hinweis unten: wie viele Quests ausgeblendet sind
-	local hiddenCount = HiddenCount()
-	if hiddenCount > 0 and not testMode then
-		nearUI.hiddenNote:ClearAllPoints()
-		nearUI.hiddenNote:SetPoint("TOPLEFT", nearUI, "TOPLEFT", 14, -(y + 2))
-		nearUI.hiddenNote:SetText(T(hiddenCount .. " ausgeblendet · /sqh hidden", hiddenCount .. " hidden · /sqh hidden"))
-		nearUI.hiddenNote:Show()
-		y = y + 16
-	else
-		nearUI.hiddenNote:Hide()
-	end
+	-- Knopf im Kopf zeigt, wie viele Quests ausgeblendet sind
+	nearUI.hiddenBtn.text:SetText(T("Ausgeblendet: ", "Hidden: ") .. HiddenCount())
+	nearUI.hiddenBtn:SetWidth(nearUI.hiddenBtn.text:GetStringWidth() + 14)
 
 	local newHeight = y + 10
 	local db = SexyQuestHelperDB.nearMode
@@ -2340,11 +2481,6 @@ local function CreateNearUI()
 		f:UpdateScroll()
 	end)
 
-	f.hiddenNote = f:CreateFontString(nil, "OVERLAY", "SexyQuestHelperText")
-	f.hiddenNote:SetTextColor(0.61, 0.57, 0.50)
-	f.hiddenNote:SetJustifyH("LEFT")
-	f.hiddenNote:Hide()
-
 	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
 	close:SetPoint("TOPRIGHT", 2, 2)
 	close:SetScript("OnClick", function()
@@ -2352,6 +2488,18 @@ local function CreateNearUI()
 		nearDismissed = f.sig
 		f:Hide()
 	end)
+
+	-- Kleiner Knopf im Kopf: öffnet den Dialog mit den ausgeblendeten Quests (zeigt ihre Anzahl)
+	f.hiddenBtn = FlatButton(f, "", 90, 18, 0.25, 0.21, 0.13)
+	f.hiddenBtn:SetPoint("RIGHT", close, "LEFT", -2, 0)
+	f.hiddenBtn:SetScript("OnClick", ToggleHiddenFrame)
+	f.hiddenBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText(T("Ausgeblendete Quests", "Hidden quests"))
+		GameTooltip:AddLine(T("Klick: Liste öffnen, dort wieder einblenden", "Click: open the list to show them again"), 0.6, 0.6, 0.6)
+		GameTooltip:Show()
+	end)
+	f.hiddenBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 	f:Hide()
 	SEM:Register(f, {
