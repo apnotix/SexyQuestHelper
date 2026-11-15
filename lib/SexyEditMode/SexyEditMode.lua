@@ -23,13 +23,16 @@
 --       group = "Name", groupName = "Titel", -- Fenster mit gleicher Gruppe teilen sich einen Dialog mit Fensterauswahl
 --       onMoved = function(frame) end,   -- nach dem Verschieben
 --       onEditMode = function(active) end, -- Edit Mode betreten (true) oder verlassen (false)
+-- hideWhenInvisible = true: "Ausblenden" und "Im Kampf ausblenden" verstecken das Fenster ganz (Hide) statt nur durchsichtig (nur für reine Container)
+-- Zeilenart { type = "dynamic", build = function() return { Zeilen mit eindeutigem key } end }: Zeilen, die bei jedem Aufbau neu entstehen
+-- Zeilenart { type = "edit", name = "Text", onSubmit = function(text) end }: Eingabefeld mit Knopf
 -- Zeilenart { type = "link", name = "Fenstername", frame = Fenster oder function() return Fenster end }: Verweis auf ein zugehöriges Fenster
 --   })
 --
 -- Gespeichert wird in opts.db: x, y (BOTTOMLEFT, UIParent), scale, hidden, hideInCombat, mouseover.
 -- Das Overlay ist frame.Selection (OnDragStart/OnDragStop lassen sich mit HookScript anhängen).
 
-local MAJOR, MINOR = "SexyEditMode-1.0", 6
+local MAJOR, MINOR = "SexyEditMode-1.0", 9
 local lib = LibStub:NewLibrary(MAJOR, MINOR)
 if not lib then return end
 
@@ -143,13 +146,14 @@ local function MigrateOldPosition(entry, final)
 	if type(p) == "table" and p.x and p.y then
 		db.x, db.y = p.x, p.y
 		db.migrated = true
-		db.profiles, db.settings = nil, nil
+		-- Die vom Addon vorab berechnete Startposition (autoSeeded) darf die übernommene nicht überschreiben.
+		-- Die alten Daten (db.profiles) bleiben liegen: so geht bei einem Fehler nichts verloren.
+		db.autoSeeded = nil
 		entry.pendingMigration = nil
 		return true
 	end
 	if final then
 		db.migrated = true
-		db.profiles, db.settings = nil, nil
 		entry.pendingMigration = nil
 	else
 		entry.pendingMigration = true
@@ -189,19 +193,23 @@ end
 local function UpdateVisibility(entry)
 	if not entry.visibility then return end
 	local db, f = entry.db, entry.frame
-	local alpha = 1
+	local alpha, canHide = 1, false
 	if lib.editing then
 		alpha = 1
 	elseif db.hidden then
-		alpha = 0
+		alpha, canHide = 0, true
 	elseif db.hideInCombat and (InCombatLockdown() or UnitAffectingCombat("player")) then
-		alpha = 0
+		alpha, canHide = 0, true
 	elseif db.mouseover and not MouseIsOver(f) then
-		alpha = 0
+		alpha = 0   -- hier muss die Maus das Fenster noch erreichen, also nicht verstecken
 	end
-	if entry.lastAlpha ~= alpha then
-		entry.lastAlpha = alpha
+	local hide = entry.hideWhenInvisible and canHide
+	if entry.lastAlpha ~= alpha or entry.lastHide ~= hide then
+		entry.lastAlpha, entry.lastHide = alpha, hide
 		f:SetAlpha(alpha)
+		-- Ein nur durchsichtiges Fenster fängt weiter Mausklicks ab: ein Container, dessen Inhalt das
+		-- Addon selbst zeigt und versteckt, wird darum ganz versteckt (hideWhenInvisible).
+		if entry.hideWhenInvisible then f:SetShown(not hide) end
 	end
 end
 
@@ -656,6 +664,45 @@ function ROWS.link(parent, spec)
 	return row, 30
 end
 
+-- Eingabefeld mit Knopf: spec.onSubmit(text) bekommt den eingegebenen Text
+function ROWS.edit(parent, spec)
+	local row = CreateFrame("Frame", nil, parent)
+	row.label = Text(row, "GameFontHighlightSmall")
+	row.label:SetPoint("TOPLEFT", 8, -2)
+	row.label:SetText(spec.name or "")
+	local box = CreateFrame("EditBox", nil, row)
+	box:SetAutoFocus(false)
+	box:SetFontObject("GameFontHighlightSmall")
+	box:SetHeight(20)
+	box:SetPoint("TOPLEFT", 8, -18)
+	box:SetPoint("TOPRIGHT", -52, -18)
+	box:SetTextInsets(5, 5, 0, 0)
+	box:SetMaxLetters(80)
+	box.edge = box:CreateTexture(nil, "BACKGROUND")
+	box.edge:SetPoint("TOPLEFT", -1, 1)
+	box.edge:SetPoint("BOTTOMRIGHT", 1, -1)
+	box.edge:SetColorTexture(EDGE[1], EDGE[2], EDGE[3], 1)
+	box.bg = box:CreateTexture(nil, "BORDER")
+	box.bg:SetAllPoints()
+	box.bg:SetColorTexture(0.06, 0.05, 0.04, 1)
+	local add = FlatButton(row, "+", 36, 20)
+	add:SetPoint("LEFT", box, "RIGHT", 8, 0)
+	local function submit()
+		local text = (box:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+		box:ClearFocus()
+		if text ~= "" and spec.onSubmit then
+			box:SetText("")
+			spec.onSubmit(text)
+			lib:RebuildDialog()
+		end
+	end
+	box:SetScript("OnEnterPressed", submit)
+	box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+	add:SetScript("OnClick", submit)
+	function row:Update() end
+	return row, 46
+end
+
 function ROWS.button(parent, spec)
 	local row = CreateFrame("Frame", nil, parent)
 	local b = FlatButton(row, spec.name, 100, 22)
@@ -844,19 +891,31 @@ function lib:RebuildDialog()
 	end
 	local rowCache = self.rowCache
 
+	-- Dynamische Abschnitte ({ type = "dynamic", build = function() return { Zeilen } end }) werden bei jedem
+	-- Aufbau neu erzeugt; Zeilen mit gleichem spec.key teilen sich eine bereits gebaute Reihe.
+	local expanded = {}
+	for _, spec in ipairs(specs) do
+		if spec.type == "dynamic" then
+			for _, sub in ipairs(spec.build() or {}) do expanded[#expanded + 1] = sub end
+		else
+			expanded[#expanded + 1] = spec
+		end
+	end
+
 	local y, hidden = 0, false
 	local function Rebuild() lib:RebuildDialog() end
-	for _, spec in ipairs(specs) do
+	for _, spec in ipairs(expanded) do
 		local make = ROWS[spec.type]
 		if make then
 			local isHeader = spec.type == "header"
 			if isHeader then hidden = Collapsed(entry, spec.id or spec.name, spec.collapsed) end
 			if isHeader or not hidden then
-				local cached = rowCache[spec]
+				local cacheKey = spec.key or spec
+				local cached = rowCache[cacheKey]
 				if not cached then
 					local frame, h = make(d.content, spec, entry, Rebuild)
 					cached = { frame = frame, height = h }
-					rowCache[spec] = cached
+					rowCache[cacheKey] = cached
 				end
 				local frame, h = cached.frame, cached.height
 				frame:ClearAllPoints()
@@ -989,6 +1048,7 @@ function lib:Register(frame, opts)
 		visibility = opts.visibility ~= false,
 		onMoved = opts.onMoved,
 		onEditMode = opts.onEditMode,
+		hideWhenInvisible = opts.hideWhenInvisible,
 		group = opts.group,
 		collapsed = {},
 	}

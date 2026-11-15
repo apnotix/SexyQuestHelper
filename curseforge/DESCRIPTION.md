@@ -12,6 +12,7 @@ Works on **World of Warcraft: Forever** and **Retail**. Styled like the other Se
 
 - 🔔 **Shows up when it matters** - the window opens when quests differ and closes when everyone is in sync. Close it to dismiss the current differences; it returns when they change.
 - 👥 **Differences per player** - which quests *you lack* and which *they lack*.
+- 🤝 **Help your group** - a second window shows quests you have already finished that a member still has, with their single goals and progress. Click a member to whisper or target. Optional, switched on in Edit Mode. Handy when you want to help someone along.
 - 📜 **Quest tooltips and links** - hover for the tooltip, click to open the quest in your log, Shift-click to link it in chat.
 - 🤝 **Share button** - share a quest with the group right from the list (greyed out in combat).
 - 🗺️ **Zone based** - only the quests of your current zone are compared.
@@ -33,6 +34,7 @@ Move and scale the window in Edit Mode (it shows sample data there), or simply d
 | Command | Description |
 |---|---|
 | `/sqh` | Show or hide the window |
+| `/sqh help` | Show or hide the "Help your group" window |
 | `/sqh refresh` | Re-scan your quest log and re-send it to the group |
 | `/sqh test` | Toggle a simulated group member to preview the display |
 | `/sqh version` | Show every group member's addon version |
@@ -55,6 +57,7 @@ The own SexyEditMode library (embedded). Fonts: Marcellus and Inter (SIL Open Fo
 **SexyQuestHelper** vergleicht die Quests deines Gebiets mit allen Gruppenmitgliedern, die das Addon nutzen, und zeigt, was abweicht.
 
 - Fenster erscheint nur bei Unterschieden, Quests per Klick im Questlog öffnen oder in den Chat verlinken
+- Zweites Fenster „Mitspielern helfen“: zeigt den Fortschritt von Quests, die du schon erledigt hast
 - Quest mit einem Klick teilen (nicht im Kampf)
 - Im Edit Mode platzierbar, mit Einstellungen für Verzögerung, automatisches Schließen, Ton und Chat-Hinweis
 - Funktioniert auf Deutsch und Englisch

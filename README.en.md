@@ -25,6 +25,7 @@ Compares the quests of your current zone with every group member who also runs t
 - 🗺️ **Zone based:** only quests of your current zone are compared. The zone is shown as a badge in the title band. The comparison uses the map ID instead of the name, so it also works between clients in different languages.
 - 🔄 **Versions at a glance:** `/sqh version` shows who runs which addon version and whether it is up to date.
 - 🎨 **Consistent look:** dark brown surface, gold frame, title band with a zone badge. Fonts: **Marcellus** for the title, **Inter** for all other text (bundled, SIL Open Font License).
+- 🤝 **Help your group:** a second window lists quests you have already finished (or only have to hand in) that a member still has, with their progress (single goals and percent). Click the name to whisper (left) or target (right). Optional: turn it on in Edit Mode and it opens by itself; `/sqh help` toggles it either way.
 - ⚙️ **Adjustable in Edit Mode:** delay before it appears, close automatically, sound, chat note, hide the zone in the title.
 - 🛡️ **No sharing in combat:** the Share button is greyed out and reads "Combat".
 - 🖱️ **Movable:** drag the window wherever you like or adjust it in **Edit Mode** (position, size 50-200 %, visibility; it shows sample data there). The position is saved. Close it and it only returns when the differences change.

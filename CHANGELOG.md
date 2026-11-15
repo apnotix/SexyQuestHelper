@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.15
+- "Help your group": each quest now lists the individual goals ("Wolves slain: 5/8") of the member, finished ones in green. Click a member's header: left click whispers, right click targets (not in combat). The goal texts travel in two new message types (older versions ignore them)- Sharing a quest no longer prints "Quest shared" to chat; only errors are reported
+- New second window "Help your group": lists quests you have already finished (handed in, or only waiting to be handed in) that a group member in your zone still has, with their progress per quest (percent, or "Ready"). It is off by default: turn it on in the Edit Mode dialog, then it opens by itself. It can be placed and scaled in Edit Mode, is toggled with /sqh help and sends progress over a new message type. Quests you still have in your log are not listed (unless you turn on "also count quests you only have to hand in"); older versions simply ignore it.
+
 ## 1.0.14
 - After a login or /reload the window no longer reports "You lack ..." for quests you already have: the quest log is still incomplete right then, so the window waits about 10 s and syncs with the group again (re-scan, resend, re-request) before it may open on its own
 - New options in the Edit Mode dialog: delay before the window appears (1-10 s, was fixed 4 s), close automatically after 0-60 s, sound when appearing, chat note about what is missing, hide the zone in the title

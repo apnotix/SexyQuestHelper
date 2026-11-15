@@ -23,6 +23,8 @@ local DEFAULTS = {
 	sound = false,             -- Ton beim Erscheinen
 	chatNotice = false,        -- Hinweis im Chat, was fehlt
 	hideZone = false,          -- Gebiets-Etikett im Titel ausblenden
+	helpAuto = false,          -- zweites Fenster (Mitspielern helfen) einschalten: es geht dann von selbst auf
+	helpReady = false,         -- Quests, die ich noch im Log habe und nur noch abgeben muss, zaehlen als erledigt
 }
 local cfg = setmetatable({}, { __index = DEFAULTS })
 
@@ -32,10 +34,15 @@ local function T(de, en) return isDE and de or en end
 local SEM = LibStub("SexyEditMode-1.0")
 local frame = CreateFrame("Frame")
 local ui                      -- Anzeigefenster (lazy)
+local helpUI                  -- zweites Fenster: Mitspielern helfen
+local RefreshHelp
 local myZone, myZoneKey, myIds, myTitles = "", "", {}, {} -- myZone: lokaler Name, myZoneKey: sprachunabhaengiger Vergleichsschluessel
 local mySignature = ""
 local members = {}            -- [name] = { zone = "", ids = { [id] = true } }
 local scanTimer, ignoreUntil = nil, 0
+local progressBy = {}         -- [name] = { [questID] = { pct = 0-100, ready = bool } }: Fortschritt der Mitglieder
+local myProgress = {}         -- dasselbe fuer mich
+local detailsBy = {}          -- [name] = { [questID] = { "Zieltext", ... } }: die Ziele der Mitglieder
 local Refresh
 local anyAddonMsgs = 0
 local recvCount, lastRecv, lastReply, prefixOk = 0, "-", 0, nil
@@ -258,6 +265,8 @@ local function Send(msg, channel)
 	lastSendResult = fn(PREFIX, msg, channel)
 end
 
+local BroadcastProgress
+
 local function Broadcast()
 	local channel = GroupChannel()
 	if not channel then return end
@@ -281,6 +290,7 @@ local function Broadcast()
 	if first or chunk ~= "" then flush() end
 	-- Version separat senden: aeltere Clients ignorieren unbekannte Nachrichtentypen.
 	Send("V|" .. VERSION, channel)
+	if BroadcastProgress then BroadcastProgress() end
 end
 
 -- Zwei Dinge kann nur der jeweils ANDERE wissen: ob er eine Quest aus unserer
@@ -300,6 +310,50 @@ local function SendIdList(first, cont, list, channel)
 		chunk = (chunk == "") and s or (chunk .. "," .. s)
 	end
 	if isFirst or chunk ~= "" then flush() end -- auch leer senden: setzt alte Meldungen zurueck
+end
+
+-- Zieltexte meiner Quests ("Id=Ziel~Ziel", Quests durch ^ getrennt). Die Trennzeichen kommen in Zieltexten
+-- nicht vor (werden sonst entfernt), Kommas dagegen schon, darum nicht wie die Id-Listen mit Komma getrennt.
+local function SendDetails(channel)
+	local list = {}
+	for _, id in ipairs(SortedIds(myIds)) do
+		local p = myProgress[id]
+		if p and p.objs and #p.objs > 0 then
+			local parts = {}
+			for i = 1, math.min(#p.objs, 4) do
+				parts[#parts + 1] = (tostring(p.objs[i]):gsub("[|~%^=]", ""):sub(1, 44))
+			end
+			list[#list + 1] = id .. "=" .. table.concat(parts, "~")
+		end
+	end
+	local isFirst, chunk = true, ""
+	local function flush()
+		Send((isFirst and "D|" or "F|") .. chunk, channel)
+		isFirst, chunk = false, ""
+	end
+	for _, entry in ipairs(list) do
+		if chunk ~= "" and #chunk + #entry + 1 > CHUNK_SIZE then flush() end
+		chunk = (chunk == "") and entry or (chunk .. "^" .. entry)
+	end
+	if isFirst or chunk ~= "" then flush() end
+end
+
+-- Fortschritt meiner Quests ("Id=Prozent", ein angehaengtes r heisst: nur noch abzugeben). Aeltere
+-- Clients ignorieren die unbekannten Nachrichtentypen "P", "S", "D" und "F".
+local lastProgressSent, lastProgressAt = "", 0
+function BroadcastProgress()
+	local channel = GroupChannel()
+	if not channel then return end
+	local list = {}
+	for _, id in ipairs(SortedIds(myIds)) do
+		local p = myProgress[id]
+		if p then list[#list + 1] = id .. "=" .. p.pct .. (p.ready and "r" or "") end
+	end
+	local text = table.concat(list, ",")
+	if text == lastProgressSent and GetTime() - lastProgressAt < 2 then return end
+	lastProgressSent, lastProgressAt = text, GetTime()
+	SendIdList("P", "S", list, channel)
+	SendDetails(channel)
 end
 
 local replyPending = {}
@@ -350,6 +404,25 @@ local function OnAddonMessage(prefix, msg, _, sender)
 		return
 	elseif kind == "V" then
 		versions[name] = rest
+		Refresh()
+		return
+	elseif kind == "P" or kind == "S" then
+		if kind == "P" or not progressBy[name] then progressBy[name] = {} end
+		for id, pct, r in rest:gmatch("(%d+)=(%d+)(r?)") do
+			progressBy[name][tonumber(id)] = { pct = tonumber(pct), ready = r == "r" }
+		end
+		Refresh()
+		return
+	elseif kind == "D" or kind == "F" then
+		if kind == "D" or not detailsBy[name] then detailsBy[name] = {} end
+		for entry in rest:gmatch("[^%^]+") do
+			local id, objs = entry:match("^(%d+)=(.*)$")
+			if id then
+				local list = {}
+				for text in objs:gmatch("[^~]+") do list[#list + 1] = text end
+				detailsBy[name][tonumber(id)] = list
+			end
+		end
 		Refresh()
 		return
 	elseif kind == "C" or kind == "E" or kind == "N" or kind == "O" then
@@ -413,6 +486,62 @@ end
 -- Retail kann die Teilbarkeit direkt abfragen. Im Legacy-Client geht das nur
 -- ueber die Auswahl im Questlog, die wir nicht bei jedem Refresh veraendern
 -- wollen - dort wird der Button angezeigt und erst beim Klick geprueft.
+-- Fortschritt einer Quest: Prozent (alle Ziele zusammen), ob sie nur noch abzugeben ist und die Zieltexte
+-- ("Wolf getoetet: 3/8"). Die Texte brauchen die anderen, weil sie eine schon abgegebene Quest selbst
+-- nicht mehr lesen koennen.
+local function QuestProgress(id)
+	local ready = false
+	if C_QuestLog and C_QuestLog.IsComplete then
+		-- Rueckgabe je Client true/1 (fertig), nil/false (offen) oder -1 (gescheitert): nur fertig zaehlt
+		local c = C_QuestLog.IsComplete(id)
+		ready = (c == true or c == 1)
+	elseif IsQuestComplete then
+		local c = IsQuestComplete(id)
+		ready = (c == true or c == 1)
+	end
+	local done, need = 0, 0
+	local texts = {}
+	if C_QuestLog and C_QuestLog.GetQuestObjectives then
+		local ok, objectives = pcall(C_QuestLog.GetQuestObjectives, id)
+		if ok and type(objectives) == "table" then
+			for _, o in ipairs(objectives) do
+				local required = tonumber(o.numRequired) or 0
+				if required > 0 then
+					need = need + required
+					done = done + math.min(tonumber(o.numFulfilled) or 0, required)
+				end
+				if type(o.text) == "string" and o.text ~= "" then texts[#texts + 1] = o.text end
+			end
+		end
+	else
+		local index = QuestLogIndex(id)
+		if index and GetNumQuestLeaderBoards and GetQuestLogLeaderBoard then
+			for i = 1, GetNumQuestLeaderBoards(index) do
+				local text = GetQuestLogLeaderBoard(i, index)
+				text = tostring(text or "")
+				local a, b = text:match("(%d+)/(%d+)")
+				if a and b and tonumber(b) > 0 then
+					need = need + tonumber(b)
+					done = done + math.min(tonumber(a), tonumber(b))
+				end
+				if text ~= "" then texts[#texts + 1] = text end
+			end
+		end
+	end
+	if ready then return 100, true, texts end
+	if need > 0 then return math.floor(done * 100 / need), false, texts end
+	return 0, false, texts
+end
+
+local function ComputeProgress(ids)
+	local result = {}
+	for id in pairs(ids) do
+		local pct, ready, texts = QuestProgress(id)
+		result[id] = { pct = pct, ready = ready, objs = texts }
+	end
+	return result
+end
+
 local function CanShare(id)
 	if not myIds[id] or not InGroup() or testMode then return false end
 	if C_QuestLog and C_QuestLog.IsPushableQuest then return C_QuestLog.IsPushableQuest(id) and true or false end
@@ -458,9 +587,8 @@ local function ShareQuest(id)
 	end
 	local ok, err = pcall(QuestLogPushQuest)
 	lastShare = { id = id, t = GetTime() }
-	if ok then
-		print("SexyQuestHelper: " .. T("Quest geteilt: ", "Quest shared: ") .. QuestLink(id))
-	else
+	-- Erfolg bleibt still (die Quest erscheint beim Mitglied); nur ein Fehler wird gemeldet
+	if not ok then
 		print("SexyQuestHelper: " .. tostring(err))
 	end
 end
@@ -918,6 +1046,10 @@ local function CreateUI()
 		name = "SexyQuestHelper",
 		db = db,
 		settings = {
+			{ type = "link", name = T("Mitspielern helfen", "Help your group"), frame = function() return helpUI end },
+			{ type = "check", name = T("Fenster \"Mitspielern helfen\" einschalten", "Turn on the \"Help your group\" window"),
+				get = function() return cfg.helpAuto end,
+				set = function(v) cfg.helpAuto = v and true or false; Refresh() end },
 			{ type = "header", name = T("Erscheinen", "Appearing"), id = "appear" },
 			{ type = "slider", name = T("Verzögerung bis zum Erscheinen", "Delay before appearing"),
 				min = 1, max = 10, step = 1,
@@ -1055,6 +1187,309 @@ function Refresh()
 end
 
 ---------------------------------------------------------------------------
+-- Zweites Fenster: Quests, die du schon erledigt hast und ein Mitglied noch hat (mit seinem Fortschritt)
+---------------------------------------------------------------------------
+
+local HELP_ROW_H, HELP_HEAD_H, HELP_OBJ_H = 26, 28, 12   -- Fragezeile, Kopfzeile, Hoehe je Zielzeile
+local helpRows = {}
+local helpForce = false      -- per /sqh help erzwungen
+local helpDismissed = nil    -- weggeklickte Zusammenstellung (Mitglieder und Quests)
+
+-- Eintraege: { kind = "header", name, count } / { kind = "quest", id | title, pct, ready } / { kind = "info", text }
+local function BuildHelp()
+	local entries, parts = {}, {}
+	if testMode then
+		entries[#entries + 1] = { kind = "header", name = "Testmate", count = 2 }
+		entries[#entries + 1] = { kind = "quest", title = T("Beispiel-Quest", "Sample quest"), pct = 60,
+			objs = { T("Wölfe getötet: 5/8", "Wolves slain: 5/8"), T("Fell: 1/1", "Pelt: 1/1") } }
+		entries[#entries + 1] = { kind = "quest", title = T("Noch eine Quest", "Another quest"), pct = 100, ready = true,
+			objs = { T("Beutel gefunden: 1/1", "Pouch found: 1/1") } }
+		return entries, "test"
+	end
+	if not GroupChannel() then return entries, "" end
+	for _, name in ipairs(GroupNames()) do
+		local m = members[name]
+		if m and m.zone == myZoneKey then
+			local quests = {}
+			for id in pairs(m.ids) do
+				-- ich bin damit fertig: abgegeben und nicht mehr im Log (wiederholbare Quests koennen als erledigt
+				-- gelten und trotzdem aktiv sein), oder (Option) im Log und nur noch abzugeben
+				local mine
+				if myIds[id] then
+					mine = cfg.helpReady and myProgress[id] and myProgress[id].ready
+				else
+					mine = IsDone(id)
+				end
+				if mine then quests[#quests + 1] = id end
+			end
+			if #quests > 0 then
+				table.sort(quests)
+				entries[#entries + 1] = { kind = "header", name = name, count = #quests }
+				for _, id in ipairs(quests) do
+					local p = progressBy[name] and progressBy[name][id]
+					entries[#entries + 1] = { kind = "quest", id = id, pct = p and p.pct, ready = p and p.ready,
+						objs = detailsBy[name] and detailsBy[name][id] }
+				end
+				parts[#parts + 1] = name .. ":" .. table.concat(quests, ",")
+			end
+		end
+	end
+	return entries, table.concat(parts, ";")
+end
+
+local function GetHelpRow(i)
+	local row = helpRows[i]
+	if row then return row end
+	row = CreateFrame("Frame", nil, helpUI)
+	row.bg = row:CreateTexture(nil, "BACKGROUND")
+	row.bg:SetAllPoints()
+	row.avatar = row:CreateTexture(nil, "ARTWORK")
+	row.avatar:SetSize(18, 18)
+	row.avatar:SetPoint("LEFT", row, "LEFT", 8, 0)
+	row.pill = MakePill(row)
+	row.pill.tex:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+	row.name = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperText")
+	row.name:SetPoint("LEFT", row.avatar, "RIGHT", 8, 0)
+	row.name:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 0)
+	row.name:SetJustifyH("LEFT")
+	row.name:SetWordWrap(false)
+	row.fs = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
+	row.fs:SetPoint("LEFT", row, "LEFT", 20, 3)
+	row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 3)
+	row.fs:SetJustifyH("LEFT")
+	row.fs:SetWordWrap(false)
+	-- Einzelne Ziele ("Wolf getoetet: 3/8"), eine Zeile je Ziel unter dem Questnamen
+	row.objs = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
+	row.objs:SetJustifyH("LEFT")
+	row.objs:SetJustifyV("TOP")
+	row.objs:SetWordWrap(false)
+	-- Kopfzeile eines Mitglieds: Linksklick fluestert, Rechtsklick visiert an
+	row:SetScript("OnEnter", function(self)
+		if not self.member then return end
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText(self.member)
+		GameTooltip:AddLine(T("Linksklick: anflüstern", "Left click: whisper"), 0.6, 0.6, 0.6)
+		GameTooltip:AddLine(T("Rechtsklick: anvisieren", "Right click: target"), 0.6, 0.6, 0.6)
+		GameTooltip:Show()
+	end)
+	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	row:SetScript("OnMouseUp", function(self, button)
+		local name = self.member
+		if not name or name == "Testmate" then return end
+		if button == "RightButton" then
+			local unit = unitByName[name]
+			if not unit then return end
+			if InCombatLockdown() then
+				print("SexyQuestHelper: " .. T("Im Kampf nicht möglich.", "Not possible in combat."))
+			else
+				pcall(TargetUnit, unit)
+			end
+		else
+			if ChatFrame_SendTell then ChatFrame_SendTell(name) end
+		end
+	end)
+	-- Fortschrittsbalken am unteren Rand der Questzeile
+	row.barBg = row:CreateTexture(nil, "BORDER")
+	row.barBg:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 20, 3)
+	row.barBg:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 3)
+	row.barBg:SetHeight(3)
+	row.barBg:SetColorTexture(0.21, 0.19, 0.14, 1)
+	row.bar = row:CreateTexture(nil, "ARTWORK")
+	row.bar:SetPoint("BOTTOMLEFT", row.barBg, "BOTTOMLEFT")
+	row.bar:SetHeight(3)
+	helpRows[i] = row
+	return row
+end
+
+local function ConfigureHelpRow(row, e)
+	local isHeader, isQuest = e.kind == "header", e.kind == "quest"
+	row.bg:SetShown(e.kind ~= "info")
+	row.bg:SetColorTexture(isHeader and 0.165 or 0.145, isHeader and 0.14 or 0.125, isHeader and 0.10 or 0.10, 1)
+	row.avatar:SetShown(isHeader)
+	row.name:SetShown(isHeader)
+	row.fs:SetShown(not isHeader)
+	row.barBg:SetShown(isQuest)
+	row.bar:SetShown(isQuest)
+	row.member = isHeader and e.name or nil
+	row:EnableMouse(isHeader)
+	row.objs:SetShown(isQuest and e.objs ~= nil and #e.objs > 0)
+	row.pill.tex:ClearAllPoints()
+	if isQuest and e.objs and #e.objs > 0 then
+		row.pill.tex:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, -5)
+	else
+		row.pill.tex:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+	end
+	if isHeader then
+		local r, g, b = ClassColor(e.name)
+		SetClassIcon(row.avatar, e.name)
+		row.name:SetText(e.name)
+		row.name:SetTextColor(r, g, b)
+		SetPill(row.pill, "they", e.count .. " " .. T("Quests", "quests"), nil, 18)
+	elseif isQuest then
+		row.fs:ClearAllPoints()
+		if e.objs and #e.objs > 0 then
+			-- Name oben, darunter die einzelnen Ziele (erfuellte gruen, offene grau)
+			row.fs:SetPoint("TOPLEFT", row, "TOPLEFT", 20, -6)
+			row.fs:SetWidth(WIDTH - 24 - 28 - 72)
+			row.objs:ClearAllPoints()
+			row.objs:SetPoint("TOPLEFT", row, "TOPLEFT", 20, -(6 + 14))
+			row.objs:SetWidth(WIDTH - 24 - 28)
+			local lines = {}
+			for _, text in ipairs(e.objs) do
+				local a, b = tostring(text):match("(%d+)/(%d+)")
+				local complete = e.ready or (a and b and tonumber(a) >= tonumber(b))
+				lines[#lines + 1] = (complete and "|cff7fd88f" or "|cff9b9180") .. text .. "|r"
+			end
+			row.objs:SetText(table.concat(lines, "\n"))
+		else
+			row.fs:SetWidth(0)
+			row.fs:SetPoint("LEFT", row, "LEFT", 20, 3)
+			row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 3)
+		end
+		row.fs:SetText(e.title or QuestName(e.id))
+		row.fs:SetTextColor(0.95, 0.92, 0.86)
+		if e.ready then
+			SetPill(row.pill, "ok", T("Bereit", "Ready"), 60, 16)
+		elseif e.pct then
+			SetPill(row.pill, "warn", e.pct .. " %", 60, 16)
+		else
+			SetPill(row.pill, "grey", "?", 60, 16)
+		end
+		local pct = e.ready and 100 or (e.pct or 0)
+		row.bar:SetWidth(math.max(1, (WIDTH - 24 - 28) * pct / 100))
+		if e.ready then row.bar:SetColorTexture(0.30, 0.76, 0.42, 1) else row.bar:SetColorTexture(0.94, 0.75, 0.29, 1) end
+	else
+		row.fs:ClearAllPoints()
+		row.fs:SetWidth(0)
+		row.fs:SetPoint("LEFT", row, "LEFT", 8, 0)
+		row.fs:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+		row.fs:SetText("|cff9b9180" .. e.text .. "|r")
+		HidePill(row.pill)
+	end
+end
+
+local function CreateHelpUI()
+	local f = CreateFrame("Frame", "SexyQuestHelperHelpFrame", UIParent, "BackdropTemplate")
+	f:SetSize(WIDTH, 60)
+	f:SetFrameStrata("MEDIUM")
+	f:SetClampedToScreen(true)
+	f:SetMovable(true)
+	f:EnableMouse(true)
+	f:RegisterForDrag("LeftButton")
+	f:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		edgeSize = 12,
+		insets = { left = 3, right = 3, top = 3, bottom = 3 },
+	})
+	f:SetBackdropColor(0.08, 0.065, 0.05, 0.96)
+	f:SetBackdropBorderColor(0.42, 0.34, 0.15, 1)
+
+	-- Position: rechts neben dem Hauptfenster (Oberkanten gleich), bei zu wenig Platz links davon
+	local db = SexyQuestHelperDB.helpMode
+	if not db then
+		db = {}
+		SexyQuestHelperDB.helpMode = db
+		local main = SexyQuestHelperDB.editMode or {}
+		local screenW = UIParent:GetWidth()
+		local mx, my = main.x or 100, main.y or 300
+		local top = my + (main.anchoredHeight or 60)
+		db.x = mx + WIDTH + 12
+		if db.x + WIDTH > screenW then db.x = math.max(0, mx - WIDTH - 12) end
+		db.y = top - 60
+		db.anchoredHeight = 60
+	end
+	f:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", db.x, db.y)
+	f:SetScript("OnDragStart", f.StartMoving)
+	f:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		SEM:SetPosition(self, self:GetLeft(), self:GetBottom())
+		db.anchoredHeight = self:GetHeight()
+	end)
+
+	f.band = f:CreateTexture(nil, "BACKGROUND")
+	f.band:SetPoint("TOPLEFT", f, "TOPLEFT", 3, -3)
+	f.band:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -3)
+	f.band:SetHeight(BAND_H - 3)
+	f.band:SetColorTexture(0.15, 0.12, 0.07, 1)
+	f.title = f:CreateFontString(nil, "OVERLAY", "SexyQuestHelperTitle")
+	f.title:SetPoint("TOPLEFT", 12, -9)
+	f.title:SetText(T("Mitspielern helfen", "Help your group"))
+
+	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+	close:SetPoint("TOPRIGHT", 2, 2)
+	close:SetScript("OnClick", function()
+		helpForce = false
+		helpDismissed = f.sig -- erscheint erst wieder bei einer anderen Zusammenstellung
+		f:Hide()
+	end)
+
+	f:Hide()
+	SEM:Register(f, {
+		name = "SexyQuestHelper: " .. T("Helfen", "Help"),
+		db = db,
+		settings = {
+			{ type = "link", name = "SexyQuestHelper", frame = function() return ui end },
+			{ type = "header", name = T("Helfen", "Help"), id = "help" },
+			{ type = "check", name = T("Fenster einschalten (öffnet sich von selbst)", "Turn the window on (opens by itself)"),
+				get = function() return cfg.helpAuto end,
+				set = function(v) cfg.helpAuto = v and true or false; Refresh() end },
+			{ type = "check", name = T("Auch Quests zählen, die du noch im Log hast und nur abgeben musst", "Also count quests still in your log that you only have to hand in"),
+				get = function() return cfg.helpReady end,
+				set = function(v) cfg.helpReady = v and true or false; Refresh() end },
+		},
+		onMoved = function(self) db.anchoredHeight = self:GetHeight() end,
+	})
+	return f
+end
+
+function RefreshHelp()
+	if not helpUI then return end
+	local entries, sig = BuildHelp()
+	helpUI.sig = sig
+	local auto = cfg.helpAuto and scanReady and #entries > 0 and sig ~= helpDismissed
+	if not (helpForce or testMode or auto) then
+		helpUI:Hide()
+		return
+	end
+	if #entries == 0 then
+		entries[1] = { kind = "info", text = T("Niemand braucht gerade Hilfe.", "Nobody needs help right now.") }
+	end
+
+	local y = BAND_H + 8
+	for i, e in ipairs(entries) do
+		local row = GetHelpRow(i)
+		local h = (e.kind == "header" and HELP_HEAD_H) or (e.kind == "quest" and HELP_ROW_H) or INFO_H
+		if e.kind == "quest" and e.objs and #e.objs > 0 then h = HELP_ROW_H + 6 + #e.objs * HELP_OBJ_H end
+		if e.kind == "header" and i > 1 then y = y + CARD_GAP end
+		row:ClearAllPoints()
+		row:SetPoint("TOPLEFT", helpUI, "TOPLEFT", 12, -y)
+		row:SetSize(WIDTH - 24, h)
+		ConfigureHelpRow(row, e)
+		row:Show()
+		y = y + h
+	end
+	for i = #entries + 1, #helpRows do helpRows[i]:Hide() end
+
+	-- Oberkante bleibt stehen (wie beim Hauptfenster)
+	local newHeight = y + 12
+	local db = SexyQuestHelperDB.helpMode
+	if db and db.x and db.y and not SEM:IsMoving(helpUI) then
+		SEM:SetPosition(helpUI, db.x, db.y - (newHeight - (db.anchoredHeight or newHeight)))
+		db.anchoredHeight = newHeight
+	end
+	helpUI:SetHeight(newHeight)
+	helpUI:Show()
+end
+
+-- Beide Fenster zusammen aktualisieren
+local RefreshMain = Refresh
+function Refresh()
+	RefreshMain()
+	RefreshHelp()
+end
+
+---------------------------------------------------------------------------
 -- Scan-Steuerung
 ---------------------------------------------------------------------------
 
@@ -1066,6 +1501,7 @@ local function DoScan(forceBroadcast)
 		return
 	end
 	myZone, myIds, myTitles, myZoneKey = zone, ids, titles, key
+	myProgress = ComputeProgress(ids)
 	ignoreUntil = GetTime() + IGNORE_AFTER_SCAN
 
 	local signature = myZoneKey .. ":" .. table.concat(SortedIds(myIds), ",")
@@ -1075,6 +1511,8 @@ local function DoScan(forceBroadcast)
 		-- eigener Stand geaendert (z.B. Vorquest abgegeben): Meldungen an alle neu senden
 		for name in pairs(members) do ScheduleDoneReply(name) end
 	end
+	-- Fortschritt auch dann senden, wenn sich nur er geaendert hat (die Quest-Liste blieb gleich)
+	BroadcastProgress()
 	if forceBroadcast and GroupChannel() then Send("R|", GroupChannel()) end
 	Refresh()
 end
@@ -1089,7 +1527,7 @@ local function PruneMembers()
 	local present = {}
 	for _, name in ipairs(GroupNames()) do present[name] = true end
 	for name in pairs(members) do
-		if not present[name] then members[name] = nil; versions[name] = nil; completedBy[name] = nil; blockedBy[name] = nil; learnedBlocked[name] = nil end
+		if not present[name] then members[name] = nil; versions[name] = nil; completedBy[name] = nil; blockedBy[name] = nil; learnedBlocked[name] = nil; progressBy[name] = nil; detailsBy[name] = nil end
 	end
 end
 
@@ -1118,6 +1556,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		SexyQuestHelperDB.cfg = SexyQuestHelperDB.cfg or {}
 		cfg = setmetatable(SexyQuestHelperDB.cfg, { __index = DEFAULTS })
 		ui = CreateUI() -- zuerst, damit /sqh auch bei spaeteren Fehlern funktioniert
+		helpUI = CreateHelpUI()
 		local register = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or RegisterAddonMessagePrefix
 		local regOk, regResult = pcall(register, PREFIX)
 		prefixOk = regOk and tostring(regResult) or ("FEHLER: " .. tostring(regResult))
@@ -1243,6 +1682,12 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 				list(DbField(id, "preQuestSingle")), list(DbField(id, "preQuestGroup")), list(DbField(id, "exclusiveTo")),
 				tostring(DbField(id, "nextQuestInChain")), tostring(DbField(id, "requiredLevel"))))
 		end
+		return
+	end
+	if arg == "help" or arg == "helfen" then
+		helpForce = not (helpUI and helpUI:IsShown())
+		if not helpForce then helpDismissed = helpUI and helpUI.sig end
+		RefreshHelp()
 		return
 	end
 	if arg == "refresh" or arg == "scan" then
