@@ -28,6 +28,7 @@ local DEFAULTS = {
 	nearRadius = 60,           -- Reichweite in Yards um eine Zielstelle
 	nearSound = false,         -- Ton, wenn eine Quest neu in Reichweite kommt
 	nearHold = 3,              -- Minuten, die eine Quest ohne festen Ort nach einem Fortschritt gelistet bleibt
+	nearMaxHeight = 400,       -- größte Höhe der Liste (Pixel); darüber wird mit dem Mausrad gescrollt
 	helpReady = false,         -- Quests, die ich noch im Log habe und nur noch abgeben muss, zaehlen als erledigt
 }
 local cfg = setmetatable({}, { __index = DEFAULTS })
@@ -1926,7 +1927,7 @@ local function GetNearRow(i)
 	local row = nearRows[i]
 	if row then return row end
 
-	row = CreateFrame("Button", nil, nearUI)
+	row = CreateFrame("Button", nil, nearUI.content)
 	row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 	row.bg = row:CreateTexture(nil, "BACKGROUND")
 	row.bg:SetAllPoints()
@@ -2071,12 +2072,13 @@ function RefreshNear()
 		return
 	end
 
-	local y = BAND_H + 8
+	-- Zeilen liegen im Scrollbereich (Koordinaten ab dessen Oberkante)
+	local y = 8
 
 	if #entries == 0 then
 		local row = GetNearRow(1)
 		row:ClearAllPoints()
-		row:SetPoint("TOPLEFT", nearUI, "TOPLEFT", 12, -y)
+		row:SetPoint("TOPLEFT", nearUI.content, "TOPLEFT", 12, -y)
 		row:SetSize(WIDTH - 24, INFO_H)
 		row.bg:Hide()
 		row.questId = nil
@@ -2104,7 +2106,7 @@ function RefreshNear()
 			local h = NEAR_ROW_H + ((#goals > 0) and (4 + #goals * GOAL_H) or 0) + 4
 
 			row:ClearAllPoints()
-			row:SetPoint("TOPLEFT", nearUI, "TOPLEFT", 12, -y)
+			row:SetPoint("TOPLEFT", nearUI.content, "TOPLEFT", 12, -y)
 			row:SetSize(WIDTH - 24, h)
 			row.bg:Show()
 			row.divider:SetShown(i > 1)
@@ -2129,6 +2131,14 @@ function RefreshNear()
 
 		for i = #entries + 1, #nearRows do nearRows[i]:Hide() end
 	end
+
+	-- Scrollbereich: so hoch wie die Liste, höchstens nearMaxHeight; darüber scrollt das Mausrad
+	local contentH = y
+	local viewH = math.min(contentH, cfg.nearMaxHeight or 400)
+	nearUI.content:SetHeight(contentH)
+	nearUI.scroll:SetHeight(viewH)
+	nearUI:UpdateScroll()
+	y = BAND_H + viewH
 
 	-- Hinweis unten: wie viele Quests ausgeblendet sind
 	local hiddenCount = HiddenCount()
@@ -2201,6 +2211,47 @@ local function CreateNearUI()
 	f.title = f:CreateFontString(nil, "OVERLAY", "SexyQuestHelperTitle")
 	f.title:SetPoint("TOPLEFT", 12, -9)
 	f.title:SetText(T("Quests in der Nähe", "Quests nearby"))
+	-- Scrollbereich für die Quest-Zeilen (Mausrad), mit schmalem Balken rechts, wenn die Liste länger ist
+	f.scroll = CreateFrame("ScrollFrame", nil, f)
+	f.scroll:SetPoint("TOPLEFT", f, "TOPLEFT", 0, -BAND_H)
+	f.scroll:SetSize(WIDTH, 1)
+	f.content = CreateFrame("Frame", nil, f.scroll)
+	f.content:SetSize(WIDTH, 1)
+	f.scroll:SetScrollChild(f.content)
+	f.scroll:EnableMouseWheel(true)
+	f.track = f.scroll:CreateTexture(nil, "ARTWORK")
+	f.track:SetPoint("TOPRIGHT", f.scroll, "TOPRIGHT", -5, -8)
+	f.track:SetPoint("BOTTOMRIGHT", f.scroll, "BOTTOMRIGHT", -5, 2)
+	f.track:SetWidth(3)
+	f.track:SetColorTexture(0.21, 0.19, 0.14, 1)
+	f.thumb = f.scroll:CreateTexture(nil, "OVERLAY")
+	f.thumb:SetWidth(3)
+	f.thumb:SetColorTexture(0.91, 0.76, 0.42, 0.9)
+
+	function f:UpdateScroll()
+		local viewH, contentH = self.scroll:GetHeight(), self.content:GetHeight()
+		local range = math.max(0, contentH - viewH)
+		local offset = math.min(math.max(self.scroll:GetVerticalScroll(), 0), range)
+		self.scroll:SetVerticalScroll(offset)
+		if range <= 0 then
+			self.track:Hide()
+			self.thumb:Hide()
+			return
+		end
+		local trackH = viewH - 10
+		local thumbH = math.max(16, trackH * viewH / contentH)
+		self.thumb:ClearAllPoints()
+		self.thumb:SetPoint("TOPRIGHT", self.track, "TOPRIGHT", 0, -(trackH - thumbH) * offset / range)
+		self.thumb:SetHeight(thumbH)
+		self.track:Show()
+		self.thumb:Show()
+	end
+
+	f.scroll:SetScript("OnMouseWheel", function(self, delta)
+		self:SetVerticalScroll(self:GetVerticalScroll() - delta * 40)
+		f:UpdateScroll()
+	end)
+
 	f.hiddenNote = f:CreateFontString(nil, "OVERLAY", "SexyQuestHelperText")
 	f.hiddenNote:SetTextColor(0.61, 0.57, 0.50)
 	f.hiddenNote:SetJustifyH("LEFT")
@@ -2231,6 +2282,10 @@ local function CreateNearUI()
 			{ type = "slider", name = T("Quest ohne festen Ort bleibt (Minuten)", "Quest without a fixed place stays (minutes)"), min = 1, max = 10, step = 1,
 				get = function() return cfg.nearHold end,
 				set = function(v) cfg.nearHold = v; RefreshNear() end },
+			{ type = "slider", name = T("Größte Höhe der Liste (darüber scrollen)", "Largest list height (scroll beyond)"), min = 150, max = 900, step = 25,
+				get = function() return cfg.nearMaxHeight end,
+				set = function(v) cfg.nearMaxHeight = v; RefreshNear() end,
+				format = function(v) return v .. " px" end },
 			{ type = "check", name = T("Ton, wenn eine Quest neu in Reichweite kommt", "Sound when a quest comes into range"),
 				get = function() return cfg.nearSound end,
 				set = function(v) cfg.nearSound = v and true or false end },
