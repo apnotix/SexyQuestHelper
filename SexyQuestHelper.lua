@@ -43,6 +43,7 @@ local ui                      -- Anzeigefenster (lazy)
 local helpUI                  -- zweites Fenster: Mitspielern helfen
 local nearUI                  -- drittes Fenster: Quests in der Naehe
 local RefreshHelp, RefreshNear
+local myLogIds = {} -- alle Quests im Log (fuer "Quests in der Naehe" in Dungeons, egal unter welcher Ueberschrift)
 local myZone, myZoneKey, myIds, myTitles = "", "", {}, {} -- myZone: lokaler Name, myZoneKey: sprachunabhaengiger Vergleichsschluessel
 local mySignature = ""
 local members = {}            -- [name] = { zone = "", ids = { [id] = true } }
@@ -222,15 +223,20 @@ local function ScanQuests()
 	end
 
 	local inZone = false
+	local all = {}
 	for i = 1, NumEntries() do
 		local title, isHeader, _, questID = GetEntry(i)
 		if isHeader then
 			inZone = (title == zone or title == mapName)
-		elseif inZone and questID and questID > 0 then
-			ids[questID] = true
-			titles[questID] = title
+		elseif questID and questID > 0 then
+			all[questID] = true
+			if inZone then
+				ids[questID] = true
+				titles[questID] = title
+			end
 		end
 	end
+	myLogIds = all
 
 	for i = NumEntries(), 1, -1 do
 		local title, isHeader = GetEntry(i)
@@ -2071,6 +2077,8 @@ end
 local function AreaMatches(areaId, wanted)
 	if debugAreas then debugAreas[areaId] = true end
 
+	if wanted.areaId and areaId == wanted.areaId then return true end
+
 	local m = AreaToMap(areaId)
 	if m and m == wanted.mapID then return true end
 
@@ -2147,12 +2155,66 @@ local function ZoneMap()
 	end
 end
 
+-- Dungeons und Schlachtzuege haben in Classic keine Karte: GetBestMapForUnit liefert nil, eine Position gibt es nicht.
+-- Instanz-ID (GetInstanceInfo) -> AreaId, unter der QuestieDB die Spawns der Instanz fuehrt (sprachunabhaengig);
+-- fehlt eine Instanz hier, wird ueber den Namen verglichen.
+local INSTANCE_AREAS = {
+	[33] = 209,   [36] = 1581,  [34] = 717,   [43] = 718,   [47] = 491,   [48] = 719,   [70] = 1337,  [90] = 721,
+	[109] = 1477, [129] = 722,  [189] = 796,  [209] = 1176, [229] = 1583, [230] = 1584, [249] = 2159, [289] = 2057,
+	[309] = 1977, [329] = 2017, [349] = 2100, [389] = 2437, [409] = 2717, [429] = 2557, [469] = 2677, [509] = 3429,
+	[531] = 3428, [533] = 3456,
+}
+
+-- Gesuchtes Gebiet in einer Instanz (Dungeon/Schlachtzug) oder nil, wenn man nicht in einer ist
+local function InstanceWanted()
+	if not IsInInstance then return end
+	local inInstance, instanceType = IsInInstance()
+	if not inInstance or (instanceType ~= "party" and instanceType ~= "raid") then return end
+
+	local name, instanceID
+	if GetInstanceInfo then
+		local n, _, _, _, _, _, _, id = GetInstanceInfo()
+		name, instanceID = n, id
+	end
+	local wanted = Wanted(nil, GetRealZoneText(), name)
+	wanted.areaId = instanceID and INSTANCE_AREAS[instanceID]
+	wanted.instanceID = instanceID
+	return wanted, "i" .. tostring(instanceID or GetRealZoneText())
+end
+
+-- In einer Instanz: alle Quests aus dem Log, deren Ziele (laut QuestieDB) in dieser Instanz liegen. Ohne Position
+-- gibt es keine Entfernung, die Quests stehen einfach in der Liste, solange man in der Instanz ist.
+local function ComputeNearInstance(wanted, zoneKey)
+	local list = {}
+	for id in pairs(myLogIds) do
+		if not IsQuestHidden(id) then
+			local _, known = QuestPoints(id, wanted, zoneKey)
+			if known > 0 then
+				local p = myProgress[id]
+				if not p then
+					local pct, ready, texts, data = QuestProgress(id)
+					p = { pct = pct, ready = ready, objs = texts, goals = data }
+				end
+				if not p.ready then
+					list[#list + 1] = { id = id, instance = true, objs = p.objs, goals = p.goals }
+				end
+			end
+		end
+	end
+	table.sort(list, function(a, b) return QuestName(a.id) < QuestName(b.id) end)
+	return list
+end
+
 -- Quests, deren Zielstellen im Umkreis liegen: { { id, dist }, ... } nach Entfernung sortiert
 local function ComputeNear()
 	local list = {}
 
 	local mapID, mapName = ZoneMap()
-	if not mapID then return list end
+	if not mapID then
+		local wanted, zoneKey = InstanceWanted()
+		if wanted then return ComputeNearInstance(wanted, zoneKey) end
+		return list
+	end
 
 	local pos = C_Map.GetPlayerMapPosition(mapID, "player")
 	if not pos then return list end
@@ -2347,7 +2409,8 @@ local function BuildNear()
 
 	for _, n in ipairs(ComputeNear()) do
 		local p = myProgress[n.id]
-		entries[#entries + 1] = { id = n.id, dist = n.dist, held = n.held, age = n.age, objs = p and p.objs, goals = p and p.goals }
+		entries[#entries + 1] = { id = n.id, dist = n.dist, held = n.held, age = n.age, instance = n.instance,
+			objs = n.objs or (p and p.objs), goals = n.goals or (p and p.goals) }
 		ids[#ids + 1] = n.id
 	end
 
@@ -2361,7 +2424,20 @@ local function DebugNear()
 	say("QuestieDB geladen: " .. tostring(HasQuestieDB() and true or false))
 	local mapID, mapName = ZoneMap()
 	say("Zonenkarte: " .. tostring(mapID) .. " (" .. tostring(mapName) .. "), GetRealZoneText: " .. tostring(GetRealZoneText()))
-	if not mapID then return end
+	if not mapID then
+		local iw, zoneKey = InstanceWanted()
+		if not iw then return end
+		say(("Instanz: ID %s, AreaId %s (keine Karte/Position, Dungeon-Modus)"):format(tostring(iw.instanceID), tostring(iw.areaId)))
+		local count = 0
+		for id in pairs(myLogIds) do
+			count = count + 1
+			pointsCache[id] = nil
+			local _, known = QuestPoints(id, iw, zoneKey)
+			if known > 0 then say(("%s [%d]: %d Ziele in dieser Instanz"):format(QuestName(id), id, known)) end
+		end
+		if count == 0 then say("Questlog leer.") end
+		return
+	end
 	local pos = C_Map.GetPlayerMapPosition(mapID, "player")
 	local px, py
 	if pos then px, py = pos:GetXY() end
@@ -2468,7 +2544,10 @@ function RefreshNear()
 			row:EnableMouse(e.id ~= nil)
 			row.fs:SetText(e.title or QuestName(e.id))
 			row.fs:SetTextColor(0.95, 0.92, 0.86)
-			if e.held and not (e.dist and e.dist <= cfg.nearRadius) then
+			if e.instance then
+				-- in Dungeons gibt es keine Position und damit keine Entfernung
+				SetPill(row.pill, "they", T("Dungeon", "Dungeon"), nil, 16)
+			elseif e.held and not (e.dist and e.dist <= cfg.nearRadius) then
 				-- ohne festen Ort: wie lange der Fortschritt her ist
 				local minutes = math.floor((e.age or 0) / 60)
 				SetPill(row.pill, "grey", minutes < 1 and T("gerade eben", "just now") or T(minutes .. " min", minutes .. " min ago"), nil, 16)
