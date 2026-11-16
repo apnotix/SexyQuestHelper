@@ -2590,10 +2590,6 @@ function RefreshNear()
 	nearUI.hiddenBtn.text:SetText(T("Ausgeblendet: ", "Hidden: ") .. HiddenCount())
 	local bw = nearUI.hiddenBtn.text:GetStringWidth() + 14
 	nearUI.hiddenBtn:SetWidth(bw)
-	-- mittig im Titelband; ist der Titel zu breit, rückt der Knopf so weit nach rechts, dass er ihn nicht überdeckt
-	local shift = math.max(0, (12 + nearUI.title:GetStringWidth() + 8) - (WIDTH - bw) / 2)
-	nearUI.hiddenBtn:ClearAllPoints()
-	nearUI.hiddenBtn:SetPoint("TOP", nearUI, "TOP", shift, -7)
 
 	local newHeight = y + 10
 	local db = SexyQuestHelperDB.nearMode
@@ -2705,7 +2701,7 @@ local function CreateNearUI()
 
 	-- Kleiner Knopf im Kopf: öffnet den Dialog mit den ausgeblendeten Quests (zeigt ihre Anzahl)
 	f.hiddenBtn = FlatButton(f, "", 90, 18, 0.25, 0.21, 0.13)
-	f.hiddenBtn:SetPoint("TOP", f, "TOP", 0, -7)   -- mittig im Titelband (siehe RefreshNear)
+	f.hiddenBtn:SetPoint("RIGHT", f.band, "RIGHT", -30, 0)   -- rechts im Titelband, links vom Schließen-Knopf, vertikal mittig
 	f.hiddenBtn:SetScript("OnClick", ToggleHiddenFrame)
 	f.hiddenBtn:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")

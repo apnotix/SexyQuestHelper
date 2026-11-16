@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- "Quests nearby": the "Hidden: N" button now sits at the right of the title bar, next to the close button, vertically centered in the bar
 - "Quests nearby" now works in dungeons and raids: the game has no map or position there, so the window lists every quest in your log (whatever its header) whose goals QuestieDB places in this instance, with a "Dungeon" label instead of a distance. Finished quests are left out. `/sqh near debug` shows the instance and the matching quests
 - "Quests nearby": the group members' badges now sit on the right of each goal, directly before your own progress badge, in the same size (quest-level badges in the title, before the distance); the goal text ends before them
 - "Quests nearby": the progress of group members is now shown as small chips in the window's style (class icon plus "3/8", a check mark or "45 %" on a dark pill, gold while open, green when done, grey "?" for members without the addon), aligned under the goal text; hover a chip for the name and the exact state. The "Hidden: N" button now sits in the middle of the title bar
