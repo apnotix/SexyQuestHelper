@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- "Quests nearby": the group members' chips are now real badges like your own progress badge: gold text on a dark gold badge while open, green on dark green when done, grey for members without the addon, with a bit more padding around class icon and text
 - `/sqh near debug` now prints all its output in English
 - "Quests nearby": the "Hidden: N" button now sits at the right of the title bar, next to the close button, vertically centered in the bar
 - "Quests nearby" now works in dungeons and raids: the game has no map or position there, so the window lists every quest in your log (whatever its header) whose goals QuestieDB places in this instance, with a "Dungeon" label instead of a distance. Finished quests are left out. `/sqh near debug` shows the instance and the matching quests

@@ -1455,11 +1455,8 @@ end
 -- Kleine Etiketten ("Chips") für den Stand der Gruppenmitglieder: Klassensymbol und Stand ("3/8", Haken, "45 %")
 -- auf dunkler Pille wie die übrigen Etiketten. Maus darüber zeigt Name und Stand im Tooltip.
 local CHIP_H = 14   -- so hoch wie das eigene Stand-Etikett eines Ziels
-local CHIP_FG = {
-	open = { 0.94, 0.75, 0.29 },
-	done = { 0.48, 0.88, 0.56 },
-	none = { 0.66, 0.61, 0.54 },
-}
+-- Farben wie beim eigenen Stand-Etikett (TONES): offen gelb, erledigt grün, unbekannt grau, jeweils mit eigenem Hintergrund
+local CHIP_TONE = { open = "warn", done = "ok", none = "grey" }
 
 local function GetChip(owner, pool, i)
 	local chip = pool[i]
@@ -1472,7 +1469,7 @@ local function GetChip(owner, pool, i)
 	chip.bg:SetColorTexture(0.16, 0.145, 0.12, 1)
 	chip.icon = chip:CreateTexture(nil, "ARTWORK")
 	chip.icon:SetSize(12, 12)
-	chip.icon:SetPoint("LEFT", chip, "LEFT", 2, 0)
+	chip.icon:SetPoint("LEFT", chip, "LEFT", 4, 0)
 	chip.text = chip:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
 	chip.text:SetPoint("LEFT", chip.icon, "RIGHT", 4, 0)
 	chip:EnableMouse(true)
@@ -1501,9 +1498,10 @@ local function LayoutChips(owner, pool, list, right, top)
 		chip.item = item
 		SetClassIcon(chip.icon, item.name)
 		chip.text:SetText(item.text)
-		local fg = CHIP_FG[item.state] or CHIP_FG.none
-		chip.text:SetTextColor(fg[1], fg[2], fg[3])
-		local w = 2 + 12 + 4 + math.ceil(chip.text:GetStringWidth()) + 6
+		local tone = TONES[CHIP_TONE[item.state] or "grey"]
+		chip.bg:SetColorTexture(tone.bg[1], tone.bg[2], tone.bg[3], 1)
+		chip.text:SetTextColor(tone.fg[1], tone.fg[2], tone.fg[3])
+		local w = 4 + 12 + 4 + math.ceil(chip.text:GetStringWidth()) + 7
 		chip:SetWidth(w)
 		chip:ClearAllPoints()
 		chip:SetPoint("TOPRIGHT", owner, "TOPRIGHT", -(right + cx), -top)
