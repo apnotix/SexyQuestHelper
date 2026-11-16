@@ -2420,22 +2420,22 @@ end
 -- /sqh near debug: zeigt, warum das Fenster erscheint oder nicht
 local function DebugNear()
 	local function say(text) print("|cffe8c26aSQH near|r " .. text) end
-	say("Fenster eingeschaltet: " .. tostring(cfg.nearEnabled) .. ", Reichweite " .. cfg.nearRadius .. " m, scanReady " .. tostring(scanReady))
-	say("QuestieDB geladen: " .. tostring(HasQuestieDB() and true or false))
+	say("Window enabled: " .. tostring(cfg.nearEnabled) .. ", range " .. cfg.nearRadius .. " yd, scanReady " .. tostring(scanReady))
+	say("QuestieDB loaded: " .. tostring(HasQuestieDB() and true or false))
 	local mapID, mapName = ZoneMap()
-	say("Zonenkarte: " .. tostring(mapID) .. " (" .. tostring(mapName) .. "), GetRealZoneText: " .. tostring(GetRealZoneText()))
+	say("Zone map: " .. tostring(mapID) .. " (" .. tostring(mapName) .. "), GetRealZoneText: " .. tostring(GetRealZoneText()))
 	if not mapID then
 		local iw, zoneKey = InstanceWanted()
 		if not iw then return end
-		say(("Instanz: ID %s, AreaId %s (keine Karte/Position, Dungeon-Modus)"):format(tostring(iw.instanceID), tostring(iw.areaId)))
+		say(("Instance: ID %s, AreaId %s (no map/position, dungeon mode)"):format(tostring(iw.instanceID), tostring(iw.areaId)))
 		local count = 0
 		for id in pairs(myLogIds) do
 			count = count + 1
 			pointsCache[id] = nil
 			local _, known = QuestPoints(id, iw, zoneKey)
-			if known > 0 then say(("%s [%d]: %d Ziele in dieser Instanz"):format(QuestName(id), id, known)) end
+			if known > 0 then say(("%s [%d]: %d goals in this instance"):format(QuestName(id), id, known)) end
 		end
-		if count == 0 then say("Questlog leer.") end
+		if count == 0 then say("Quest log is empty.") end
 		return
 	end
 	local pos = C_Map.GetPlayerMapPosition(mapID, "player")
@@ -2444,7 +2444,7 @@ local function DebugNear()
 	say("Position: " .. tostring(px and (px * 100)) .. " / " .. tostring(py and (py * 100)))
 	local w, h
 	if C_Map.GetMapWorldSize then w, h = C_Map.GetMapWorldSize(mapID) end
-	say("Kartengröße (Yards): " .. tostring(w) .. " x " .. tostring(h))
+	say("Map size (yards): " .. tostring(w) .. " x " .. tostring(h))
 	local wanted = Wanted(mapID, GetRealZoneText(), mapName)
 	local count = 0
 	for id in pairs(myIds) do
@@ -2461,17 +2461,17 @@ local function DebugNear()
 				if not best or d < best then best = d end
 			end
 		end
-		say(("%s [%d]: %d Punkte, nächster %s"):format(QuestName(id), id, #points, best and (math.floor(best) .. " m") or "-"))
+		say(("%s [%d]: %d points, nearest %s"):format(QuestName(id), id, #points, best and (math.floor(best) .. " yd") or "-"))
 		if #points == 0 then
 			local parts = {}
 			for areaId in pairs(seen) do
 				if #parts >= 6 then break end
 				parts[#parts + 1] = ("%s=%s/m%s"):format(tostring(areaId), tostring(AreaName(areaId)), tostring(AreaToMap(areaId)))
 			end
-			say("    Gebiete der Ziele: " .. (#parts > 0 and table.concat(parts, ", ") or "keine (QuestieDB kennt keine Orte)"))
+			say("    Goal areas: " .. (#parts > 0 and table.concat(parts, ", ") or "none (QuestieDB knows no places)"))
 		end
 	end
-	if count == 0 then say("Keine Quests deines Gebiets im Log (myIds leer).") end
+	if count == 0 then say("No quests of your zone in the log (myIds empty).") end
 end
 
 function RefreshNear()

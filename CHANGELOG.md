@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- `/sqh near debug` now prints all its output in English
 - "Quests nearby": the "Hidden: N" button now sits at the right of the title bar, next to the close button, vertically centered in the bar
 - "Quests nearby" now works in dungeons and raids: the game has no map or position there, so the window lists every quest in your log (whatever its header) whose goals QuestieDB places in this instance, with a "Dungeon" label instead of a distance. Finished quests are left out. `/sqh near debug` shows the instance and the matching quests
 - "Quests nearby": the group members' badges now sit on the right of each goal, directly before your own progress badge, in the same size (quest-level badges in the title, before the distance); the goal text ends before them
