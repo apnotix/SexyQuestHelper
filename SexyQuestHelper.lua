@@ -2803,13 +2803,25 @@ local function PruneMembers()
 	end
 end
 
+-- Direkt nach einem Scan werden QUEST_LOG_UPDATE-Events ignoriert (Auf-/Zuklappen im Questlog). Ein echter
+-- Fortschritt (z. B. der nächste Kill) soll trotzdem sofort zählen: dann hat sich der Stand einer Quest geändert
+local function ProgressChanged()
+	local ok, now = pcall(ComputeProgress, myIds)
+	if not ok then return false end
+	for id, p in pairs(now) do
+		local o = myProgress[id]
+		if not o or o.pct ~= p.pct or o.ready ~= p.ready then return true end
+	end
+	return false
+end
+
 frame:SetScript("OnEvent", function(_, event, ...)
 	if event == "CHAT_MSG_ADDON" then
 		OnAddonMessage(...)
 	elseif event == "QUEST_DATA_LOAD_RESULT" then
 		Refresh()
 	elseif event == "QUEST_LOG_UPDATE" then
-		if GetTime() >= ignoreUntil then QueueScan(false) end
+		if GetTime() >= ignoreUntil or ProgressChanged() then QueueScan(false) end
 	elseif event == "CHAT_MSG_SYSTEM" then
 		OnSystemMessage(...)
 	elseif event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "QUEST_TURNED_IN" then
@@ -2901,6 +2913,10 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 		return
 	end
 	arg = (arg or ""):lower()
+	if arg == "minimap" then
+		SexyQuestHelper_ToggleMinimapButton()
+		return
+	end
 	if arg == "test" then
 		editPreview = false
 		SetTestMode(not testMode)

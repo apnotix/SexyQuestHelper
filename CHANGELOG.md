@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Quest progress (e.g. a second mob kill within two seconds of the previous scan) is now picked up immediately instead of waiting for the next quest log event
+- New minimap button: left click opens/closes Edit Mode. Hide it with `/sqh minimap`
 - "Quests nearby": the group members' chips are now real badges like your own progress badge: gold text on a dark gold badge while open, green on dark green when done, grey for members without the addon, with a bit more padding around class icon and text
 - `/sqh near debug` now prints all its output in English
 - "Quests nearby": the "Hidden: N" button now sits at the right of the title bar, next to the close button, vertically centered in the bar
