@@ -26,7 +26,6 @@ Move and scale the window in Edit Mode (it shows sample data there), or simply d
 - Delay before the window appears (1 - 10 s)
 - Close automatically after 0 - 60 s
 - Sound when the window appears
-- Chat note about what is missing
 - Hide the zone in the title
 - Size (50 - 200 %) and visibility (hide, hide in combat, mouseover)
 

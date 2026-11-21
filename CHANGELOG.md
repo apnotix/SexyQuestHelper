@@ -1,6 +1,29 @@
 # Changelog
 
-## Unreleased
+## 1.0.30
+- SexyEditMode is now a required dependency (CurseForge installs it automatically)
+- "Quests nearby": a quest that was in range less than two minutes ago and comes back (small area, standing at the edge of the range) no longer plays the sound or glows again
+- "Quests nearby": a quest that comes into range glows briefly in the list (also in the small view); can be turned off in the settings
+- Removed the chat note "You lack: ..." (and its setting): the window itself shows what is missing
+- Each window has a new setting "In combat": show normally, small view or hide (settings window)
+- Docking: every window can be docked to another window (also of other Sexy addons), with side and alignment (needs the SexyEditMode addon)
+- "Quests nearby": no sound while flying (mounted, in flight form or on a flight path)
+- Minimap button, right click: Edit Mode only for the windows of SexyQuestHelper (needs the SexyEditMode addon)
+- Edit Mode: the three windows have tabs at the top of their dialog (needs the SexyEditMode addon)
+- "Quests nearby" in dungeons and raids: quests that your quest log lists under the name of the instance are always shown, even if their goals are outside before the entrance (e.g. The Essence of Aku'Mai)
+- "Quests nearby" in dungeons and raids: quests that QuestieDB itself assigns to the instance are always listed. /sqh near debug now also lists the quests that are not shown and why (share of drop sources inside the instance)
+- "Quests nearby" in dungeons and raids: a quest whose item drops from many creatures all over the world no longer shows up just because one of them also lives in the instance. An item counts if at least half of its known drop sources are in the instance, or if it has only a few sources (8 or fewer) and one of them is there (e.g. The Essence of Aku'Mai)
+- Small view: every window has a "-" button in its title band that collapses it to the title band plus one summary line (group sync: who differs and how many quests; help: member and quest with progress; nearby: low, one line per quest with its name and one number at the end, e.g. 4/10, nothing else). "+" expands it again; each window remembers its state
+- "Quests nearby": the "Hidden: N" button in the title band is gone (the list is on its own page in the shared settings window, and /sqh hidden still opens it)
+- Edit Mode: with SexyEditMode the dialogs of the windows show only visual options; behavior (delay, auto close, sounds, range, turning windows on, ...) is in the shared settings window (/sem)
+- Minimap button: left click opens the settings window (SexyEditMode) at the first area of SexyQuestHelper, right click toggles Edit Mode
+- LibSharedMedia is now embedded, so the sound list of "Quests nearby" shows all sounds of your LibSharedMedia addons (SexyInterrupter, SharedMedia packs, ...) without needing another addon to load it
+- "Quests nearby": the sound for a quest coming into range can be chosen (game sounds, plus the sounds of LibSharedMedia if another addon loads it); picking a sound or channel plays it. The volume follows the chosen sound channel (Master, Effects, Dialog, Ambience): WoW cannot set the volume of a single sound. The sound plays on the Master channel by default now and falls back to the standard sound if the chosen one is not available
+- Hidden quests page: hovering over a quest name shows the quest tooltip
+- Hidden quests page: the quest name on the left, a "Show" button behind it, and "Show all" at the very top
+- "Hidden quests" is its own page in the shared settings window (SexyEditMode, /sem) instead of a section in every window's settings. The list can still be opened with the "Hidden" button in "Quests nearby" and with /sqh hidden
+- The "Help" window is now called "Help your group" everywhere (window title, settings section, shared settings window)
+- Registers with the new SexyEditMode addon: if it is installed, the three windows also appear in its shared settings window (/sem). Nothing changes without it
 - Quest progress (e.g. a second mob kill within two seconds of the previous scan) is now picked up immediately instead of waiting for the next quest log event
 - New minimap button: left click opens/closes Edit Mode. Hide it with `/sqh minimap`
 - "Quests nearby": the group members' chips are now real badges like your own progress badge: gold text on a dark gold badge while open, green on dark green when done, grey for members without the addon, with a bit more padding around class icon and text

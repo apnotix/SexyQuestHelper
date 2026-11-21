@@ -1,5 +1,8 @@
 package-as: SexyQuestHelper
 
+required-dependencies:
+  - sexyeditmode
+
 manual-changelog:
   filename: CHANGELOG.md
   markup-type: markdown

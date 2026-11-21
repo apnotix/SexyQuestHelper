@@ -9,12 +9,14 @@
 ## IconTexture: Interface\AddOns\SexyQuestHelper\icon.tga
 ## DefaultState: Enabled
 ## OptionalDeps: QuestieDB
+## Dependencies: SexyEditMode
 ## SavedVariables: SexyQuestHelperDB
 
 lib\LibStub\LibStub.lua
 lib\CallbackHandler-1.0\CallbackHandler-1.0.lua
 lib\LibDataBroker-1.1\LibDataBroker-1.1.lua
 lib\LibDBIcon-1.0\LibDBIcon-1.0.lua
+lib\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
 lib\SexyEditMode\SexyEditMode.lua
 
 SexyQuestHelper.lua
