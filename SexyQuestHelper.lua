@@ -5,21 +5,23 @@
 -- Kategorie = Gebietsname), sendet die Quest-IDs per Addon-Nachricht an die
 -- Gruppe und vergleicht sie mit den empfangenen Listen der anderen.
 
+local ST = {}   -- gemeinsamer Zustand statt vieler einzelner lokaler Variablen (Lua erlaubt höchstens 200 pro Funktion)
 local PREFIX = "SexyQuestHelper"
 local VERSION = "1.0.31" -- wird vom Release-Workflow zusammen mit ## Version in der .toc angehoben (GetAddOnMetadata fehlt auf Forever)
-local versions = {} -- [name] = Addon-Version des Mitglieds
-local blockedBy = {}      -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied laut seiner Meldung nicht annehmen kann
-local learnedBlocked = {} -- wie blockedBy, aber aus Fehlermeldungen beim Teilen gelernt
-local completedBy = {} -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied schon abgeschlossen hat
-local SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
-local DIFF_SETTLE = 4       -- Sekunden, die ein Unterschied bestehen muss, bevor das Fenster erscheint
-local IGNORE_AFTER_SCAN = 2 -- Sekunden, in denen eigene Auf-/Zuklapp-Events ignoriert werden
-local CHUNK_SIZE = 200      -- Zeichen Quest-IDs pro Nachricht (Limit: 255 inkl. Header)
+ST.versions = {} -- [name] = Addon-Version des Mitglieds
+ST.blockedBy = {}      -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied laut seiner Meldung nicht annehmen kann
+ST.learnedBlocked = {} -- wie blockedBy, aber aus Fehlermeldungen beim Teilen gelernt
+ST.completedBy = {} -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied schon abgeschlossen hat
+ST.SCAN_DELAY = 1        -- Sekunden Entprellung nach Events
+ST.DIFF_SETTLE = 4       -- Sekunden, die ein Unterschied bestehen muss, bevor das Fenster erscheint
+ST.IGNORE_AFTER_SCAN = 2 -- Sekunden, in denen eigene Auf-/Zuklapp-Events ignoriert werden
+ST.CHUNK_SIZE = 200      -- Zeichen Quest-IDs pro Nachricht (Limit: 255 inkl. Header)
 
 -- Einstellungen (Edit Mode); gespeichert wird nur, was vom Standard abweicht
 local DEFAULTS = {
-	settleDelay = DIFF_SETTLE, -- Sekunden, die ein Unterschied bestehen muss, bevor das Fenster erscheint
+	settleDelay = ST.DIFF_SETTLE, -- Sekunden, die ein Unterschied bestehen muss, bevor das Fenster erscheint
 	autoClose = 0,             -- Sekunden bis das Fenster von selbst zugeht (0 = aus)
+	autoShare = false,         -- Quests, die ein Mitglied im selben Gebiet nicht hat, automatisch teilen
 	sound = false,             -- Ton beim Erscheinen
 	hideZone = false,          -- Gebiets-Etikett im Titel ausblenden
 	helpAuto = false,          -- zweites Fenster (Mitspielern helfen) einschalten: es geht dann von selbst auf
@@ -35,7 +37,35 @@ local DEFAULTS = {
 	minMain = false,           -- Gruppenabgleich eingeklappt (kleine Ansicht)
 	minHelp = false,           -- Mitspielern helfen eingeklappt
 	minNear = false,           -- Quests in der Nähe eingeklappt
-	helpReady = false,         -- Quests, die ich noch im Log habe und nur noch abgeben muss, zaehlen als erledigt
+	hideHeaderMain = false,    -- Kopfzeile des Fensters Gruppenabgleich ausblenden
+	hideHeaderHelp = false,    -- ... des Fensters Mitspielern helfen
+	hideHeaderNear = false,    -- ... des Fensters Quests in der Nähe
+	helpReady = true,          -- Quests, die ich noch im Log habe und nur noch abgeben muss, zaehlen als erledigt
+	width = 376,               -- Breite der drei Fenster (Pixel)
+	rowH = 24,                 -- Zeilenhöhe der Quests; Kopfzeilen und Kartenköpfe richten sich danach
+	cardGap = 8,               -- Abstand zwischen den Karten der Mitspieler
+	opacity = 0.96,            -- Deckkraft des Fensterhintergrunds
+	showShare = true,          -- Teilen-Knopf in den Quest-Zeilen (Gruppenabgleich)
+	showPills = true,          -- Etiketten "Dir fehlt" / "Hat nicht" (Gruppenabgleich)
+	showBars = true,           -- Fortschrittsbalken unter den Zielen (Mitspielern helfen, Quests in der Nähe)
+	barH = 3,                  -- Höhe dieser Balken (Pixel)
+	fontDelta = 0,             -- Schriftgröße: Unterschied zu den Standardgrößen (Titel 14, Text 13, klein 11)
+	bandH = 30,                -- Höhe der Titelleiste
+	bgColor = { r = 0.08, g = 0.065, b = 0.05 },       -- Hintergrund der Fenster
+	borderColor = { r = 0.42, g = 0.34, b = 0.15 },    -- Rand der Fenster
+	showAvatar = true,         -- Klassensymbol der Mitspieler
+	avatarSize = 20,
+	showStatus = true,         -- Etiketten der Mitspieler ("3 Unterschiede", "2 Quests")
+	showAccent = true,         -- Farbstreifen links an den Quests (Mitspielern helfen, Quests in der Nähe)
+	accentW = 3,
+	showDividers = true,       -- Trennlinien zwischen den Zeilen
+	showDist = true,           -- Entfernung in "Quests in der Nähe"
+	showChecks = true,         -- Kästchen vor den Zielen
+	showCounts = true,         -- Zähler ("3/8") der Ziele
+	showButtons = true,        -- Knöpfe in der Titelleiste (Schließen, "-")
+	showScroll = true,         -- Scrollbalken in "Quests in der Nähe"
+	glowColor = { r = 0.94, g = 0.75, b = 0.29 },      -- Aufleuchten einer neuen Quest
+	glowAlpha = 0.4,
 }
 local cfg = setmetatable({}, { __index = DEFAULTS })
 
@@ -182,6 +212,10 @@ end
 -- Mikro-/Dungeonkarten die uebergeordnete Zonenkarte). Ohne C_Map: Name.
 local ZONE_MAPTYPE = (Enum and Enum.UIMapType and Enum.UIMapType.Zone) or 3
 
+-- Gebiete, die für Quests als ein anderes Gebiet zählen (UiMapID -> UiMapID): Die Quests stehen im Questlog unter
+-- dem Namen des Zielgebiets. 1416 Alterac-Gebirge zählt zum Vorgebirge von Hillsbrad (1424).
+SexyQuestHelperZoneAlias = { [1416] = 1424 }   -- global statt local: die Hauptdatei ist nah am Limit von 200 lokalen Variablen
+
 local function ZoneKey()
 	if C_Map and C_Map.GetBestMapForUnit then
 		local id = C_Map.GetBestMapForUnit("player")
@@ -194,7 +228,7 @@ local function ZoneKey()
 					break
 				end
 			end
-			return "m" .. id
+			return "m" .. (SexyQuestHelperZoneAlias[id] or id)
 		end
 	end
 	return "n:" .. CurrentZone()
@@ -303,7 +337,7 @@ local function Broadcast()
 
 	for _, id in ipairs(list) do
 		local s = tostring(id)
-		if #chunk + #s + 1 > CHUNK_SIZE then flush() end
+		if #chunk + #s + 1 > ST.CHUNK_SIZE then flush() end
 		chunk = (chunk == "") and s or (chunk .. "," .. s)
 	end
 	-- Auch eine leere Liste senden, damit andere "keine Quests" von "kein Addon" unterscheiden.
@@ -326,7 +360,7 @@ local function SendIdList(first, cont, list, channel)
 	end
 	for _, id in ipairs(list) do
 		local s = tostring(id)
-		if #chunk + #s + 1 > CHUNK_SIZE then flush() end
+		if #chunk + #s + 1 > ST.CHUNK_SIZE then flush() end
 		chunk = (chunk == "") and s or (chunk .. "," .. s)
 	end
 	if isFirst or chunk ~= "" then flush() end -- auch leer senden: setzt alte Meldungen zurueck
@@ -335,13 +369,27 @@ end
 -- Zieltexte meiner Quests ("Id=Ziel~Ziel", Quests durch ^ getrennt). Die Trennzeichen kommen in Zieltexten
 -- nicht vor (werden sonst entfernt), Kommas dagegen schon, darum nicht wie die Id-Listen mit Komma getrennt.
 local function SendDetails(channel)
-	local list = {}
+	local list = { "L=" .. GetLocale() }   -- Sprache der Zieltexte; ältere Versionen überspringen den Eintrag (keine Quest-ID)
 	for _, id in ipairs(SortedIds(myIds)) do
 		local p = myProgress[id]
 		if p and p.objs and #p.objs > 0 then
 			local parts = {}
 			for i = 1, math.min(#p.objs, 4) do
-				parts[#parts + 1] = (tostring(p.objs[i]):gsub("[|~%^=]", ""):sub(1, 44))
+				local text = tostring(p.objs[i]):gsub("[|~%^=]", "")
+				-- Zähler zuerst ("3/8 Wolf"), dann wird nur der Name gekürzt: bei langen Zielen würde ein Kürzen am Ende den
+				-- Zähler abschneiden, und die Empfänger könnten den Stand nicht mehr lesen (der Mitspieler bliebe unsichtbar)
+				local ha, hb, hrest = text:match("^%s*(%d+)/(%d+)%s+(.-)%s*$")
+				if not ha then
+					local nm, ca, cb = text:match("^(.-)%s*:?%s*(%d+)/(%d+)%s*$")
+					if nm and nm ~= "" then ha, hb, hrest = ca, cb, nm end
+				end
+				if ha then
+					local count = ha .. "/" .. hb
+					text = count .. " " .. hrest:sub(1, math.max(8, 44 - #count - 1))
+				else
+					text = text:sub(1, 44)
+				end
+				parts[#parts + 1] = text
 			end
 			list[#list + 1] = id .. "=" .. table.concat(parts, "~")
 		end
@@ -352,7 +400,7 @@ local function SendDetails(channel)
 		isFirst, chunk = false, ""
 	end
 	for _, entry in ipairs(list) do
-		if chunk ~= "" and #chunk + #entry + 1 > CHUNK_SIZE then flush() end
+		if chunk ~= "" and #chunk + #entry + 1 > ST.CHUNK_SIZE then flush() end
 		chunk = (chunk == "") and entry or (chunk .. "^" .. entry)
 	end
 	if isFirst or chunk ~= "" then flush() end
@@ -423,7 +471,7 @@ local function OnAddonMessage(prefix, msg, _, sender)
 		end
 		return
 	elseif kind == "V" then
-		versions[name] = rest
+		ST.versions[name] = rest
 		Refresh()
 		return
 	elseif kind == "P" or kind == "S" then
@@ -436,6 +484,8 @@ local function OnAddonMessage(prefix, msg, _, sender)
 	elseif kind == "D" or kind == "F" then
 		if kind == "D" or not detailsBy[name] then detailsBy[name] = {} end
 		for entry in rest:gmatch("[^%^]+") do
+			local loc = entry:match("^L=(%a+)$")
+			if loc then detailsBy[name].locale = loc end
 			local id, objs = entry:match("^(%d+)=(.*)$")
 			if id then
 				local list = {}
@@ -446,7 +496,7 @@ local function OnAddonMessage(prefix, msg, _, sender)
 		Refresh()
 		return
 	elseif kind == "C" or kind == "E" or kind == "N" or kind == "O" then
-		local store = (kind == "C" or kind == "E") and completedBy or blockedBy
+		local store = (kind == "C" or kind == "E") and ST.completedBy or ST.blockedBy
 		if kind == "C" or kind == "N" or not store[name] then store[name] = {} end
 		for id in rest:gmatch("%d+") do store[name][tonumber(id)] = true end
 		Refresh()
@@ -518,6 +568,16 @@ local function HiddenList()
 	return list
 end
 
+-- Ausgeblendete Quests, die nicht (mehr) im Questlog stehen (abgegeben, abgebrochen), fallen aus der Liste. Erst, wenn der
+-- Questlog gelesen ist: beim Laden wäre er sonst leer und alles würde gelöscht.
+local function PruneHidden()
+	local hidden = SexyQuestHelperDB.nearHidden
+	if not (hidden and scanReady and next(myLogIds)) then return end
+	for id in pairs(hidden) do
+		if not myLogIds[id] then hidden[id] = nil end
+	end
+end
+
 local hiddenFrame              -- eigener Dialog "Ausgeblendete Quests" (Knopf oben in "Quests in der Nähe")
 local RefreshHiddenFrame
 
@@ -531,10 +591,11 @@ local function HideQuest(id)
 	GameTooltip:Hide()
 	SexyQuestHelperDB.nearHidden = SexyQuestHelperDB.nearHidden or {}
 	SexyQuestHelperDB.nearHidden[id] = QuestName(id)
-	print("|cffe8c26aSexyQuestHelper|r " .. T("ausgeblendet: ", "hidden: ") .. QuestName(id) .. " |cff9b9180("
+	print("|cffe8c26a[SQH]|r " .. T("ausgeblendet: ", "hidden: ") .. QuestName(id) .. " |cff9b9180("
 		.. T("wieder einblenden im Edit Mode oder mit /sqh hidden", "show again in Edit Mode or with /sqh hidden") .. ")|r")
 	Refresh()
 	RefreshHiddenDialog()
+	if SexyQuestHelperAPI.RefreshTargets then SexyQuestHelperAPI.RefreshTargets() end   -- Quest-Aktionen neu aufbauen
 end
 
 -- id = nil: alle wieder einblenden
@@ -546,6 +607,7 @@ local function UnhideQuest(id)
 	end
 	Refresh()
 	RefreshHiddenDialog()
+	if SexyQuestHelperAPI.RefreshTargets then SexyQuestHelperAPI.RefreshTargets() end   -- Quest-Aktionen neu aufbauen
 end
 
 -- Abschnitt "Ausgeblendete Quests" für den Dialog im Edit Mode (in allen drei Fenstern gleich)
@@ -588,14 +650,23 @@ local function FlatButton(parent, text, width, height, r, g, b)
 	btn:SetSize(width, height)
 	btn.bg = btn:CreateTexture(nil, "BACKGROUND")
 	btn.bg:SetAllPoints()
-	btn.bg:SetColorTexture(r or 0.184, g or 0.42, b or 0.235, 1)
+	-- Look wie im Einstellungsfenster (SexyEditMode): Bandfarbe, goldene Schrift, Tooltip-Rand; r, g, b setzen eine eigene Fläche
+	btn.bg:SetColorTexture(r or 0.15, g or 0.12, b or 0.07, 1)
 	btn.hl = btn:CreateTexture(nil, "HIGHLIGHT")
 	btn.hl:SetAllPoints()
-	btn.hl:SetColorTexture(1, 1, 1, 0.25)
+	btn.hl:SetColorTexture(1, 1, 1, 0.12)
 	btn.text = btn:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
 	btn.text:SetAllPoints()
 	btn.text:SetText(text)
+	btn.text:SetTextColor(0.91, 0.76, 0.42)
 	btn:RegisterForClicks("LeftButtonUp")
+	if BackdropTemplateMixin then
+		local rim = CreateFrame("Frame", nil, btn, "BackdropTemplate")
+		rim:SetAllPoints(btn)
+		rim:SetFrameLevel(btn:GetFrameLevel() + 2)
+		rim:SetBackdrop({ edgeFile = "Interface/Tooltips/UI-Tooltip-Border", edgeSize = 10 })
+		rim:SetBackdropBorderColor(0.42, 0.34, 0.15, 1)
+	end
 	return btn
 end
 
@@ -630,6 +701,7 @@ local function CreateHiddenFrame()
 
 	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
 	close:SetPoint("TOPRIGHT", 2, 2)
+	f.closeBtn = close
 	close:SetScript("OnClick", function() f:Hide() end)
 
 	-- Liste im Scrollbereich (Mausrad)
@@ -820,8 +892,8 @@ local function UpdateShareButton(btn)
 		btn.text:SetText(T("Kampf", "Combat")) -- Hinweis, warum der Knopf aus ist
 		btn.hl:Hide()
 	else
-		btn.bg:SetColorTexture(0.184, 0.42, 0.235, 1)
-		btn.text:SetTextColor(1, 1, 1)
+		btn.bg:SetColorTexture(0.15, 0.12, 0.07, 1)
+		btn.text:SetTextColor(0.91, 0.76, 0.42)
 		btn.text:SetText(T("Teilen", "Share"))
 		btn.hl:Show()
 	end
@@ -829,7 +901,7 @@ end
 
 local function ShareQuest(id)
 	if InCombat() then
-		print("SexyQuestHelper: " .. T("Im Kampf kann nicht geteilt werden.", "Cannot share while in combat."))
+		print("|cffe8c26a[SQH]|r " .. T("Im Kampf kann nicht geteilt werden.", "Cannot share while in combat."))
 		return
 	end
 	local index = QuestLogIndex(id)
@@ -840,16 +912,42 @@ local function ShareQuest(id)
 		SelectQuestLogEntry(index)
 	end
 	if not (C_QuestLog and C_QuestLog.IsPushableQuest) and GetQuestLogPushable and not GetQuestLogPushable() then
-		print("SexyQuestHelper: " .. T("Diese Quest kann nicht geteilt werden.", "This quest cannot be shared."))
+		print("|cffe8c26a[SQH]|r " .. T("Diese Quest kann nicht geteilt werden.", "This quest cannot be shared."))
 		return
 	end
 	local ok, err = pcall(QuestLogPushQuest)
 	lastShare = { id = id, t = GetTime() }
 	-- Erfolg bleibt still (die Quest erscheint beim Mitglied); nur ein Fehler wird gemeldet
 	if not ok then
-		print("SexyQuestHelper: " .. tostring(err))
+		print("|cffe8c26a[SQH]|r " .. tostring(err))
 	end
 end
+
+-- Automatisch teilen (Einstellung cfg.autoShare): Quests, die ein Mitglied im selben Gebiet nicht hat, wie in der Liste "Hat nicht".
+-- Geteilt wird nie im Kampf, höchstens eine Quest je Durchlauf (alle 4 Sekunden) und dieselbe Quest frühestens nach 10 Minuten wieder,
+-- damit bei den Mitspielern nicht dauernd Fenster aufgehen. Verworfene oder unmögliche Quests (blockedBy, learnedBlocked) bleiben draußen.
+function ST.AutoShareTick()
+	if not (cfg and cfg.autoShare) or testMode or InCombat() or not GroupChannel() then return end
+	local now = GetTime()
+	ST.autoShared = ST.autoShared or {}
+	for _, name in ipairs(GroupNames()) do
+		local m = members[name]
+		if m and m.zone == myZoneKey then
+			local theirDone = ST.completedBy[name]
+			for id in pairs(myIds) do
+				if not m.ids[id] and not (theirDone and theirDone[id]) and not IsQuestHidden(id)
+					and not (ST.blockedBy[name] and ST.blockedBy[name][id])
+					and not (ST.learnedBlocked[name] and ST.learnedBlocked[name][id])
+					and CanShare(id) and now - (ST.autoShared[id] or -1e9) > 600 then   -- Sekunden bis dieselbe Quest wieder geteilt wird
+					ST.autoShared[id] = now
+					ShareQuest(id)
+					return
+				end
+			end
+		end
+	end
+end
+C_Timer.NewTicker(4, function() ST.AutoShareTick() end)
 
 -- Fehlermeldungen beim Teilen ("X is not eligible for that quest" usw.) merken wir
 -- uns: die Quest ist fuer dieses Mitglied nicht annehmbar, der Button und der
@@ -871,8 +969,8 @@ local function OnSystemMessage(msg)
 		local who = msg:match(pattern)
 		if who then
 			local name = who:match("^([^%s%-]+)") or who
-			learnedBlocked[name] = learnedBlocked[name] or {}
-			learnedBlocked[name][lastShare.id] = true
+			ST.learnedBlocked[name] = ST.learnedBlocked[name] or {}
+			ST.learnedBlocked[name][lastShare.id] = true
 			Refresh()
 			return
 		end
@@ -882,12 +980,12 @@ end
 local function OpenQuest(id)
 	if IsShiftKeyDown() then
 		if not ChatEdit_InsertLink(QuestLink(id)) then
-			print("SexyQuestHelper: " .. QuestLink(id))
+			print("|cffe8c26a[SQH]|r " .. QuestLink(id))
 		end
 		return
 	end
 	if not myIds[id] then
-		print("SexyQuestHelper: " .. QuestLink(id) .. " - " .. T("nicht in deinem Questlog.", "not in your quest log."))
+		print("|cffe8c26a[SQH]|r " .. QuestLink(id) .. " - " .. T("nicht in deinem Questlog.", "not in your quest log."))
 		return
 	end
 	if QuestMapFrame_OpenToQuestDetails then -- Retail-Stil
@@ -1032,7 +1130,7 @@ local function BuildEntries(showAll)
 					end
 				else
 					local iLack, theyLack = {}, {}
-					local theirDone = completedBy[name]
+					local theirDone = ST.completedBy[name]
 					for id in pairs(m.ids) do
 						-- hat er, ich nicht - aber ich habe sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
 						if not myIds[id] and not IsDone(id) and CanAccept(id) and not IsQuestHidden(id) then iLack[#iLack + 1] = id end
@@ -1040,8 +1138,8 @@ local function BuildEntries(showAll)
 					for id in pairs(myIds) do
 						-- habe ich, er nicht - aber er hat sie schon abgegeben oder kann sie nicht annehmen: kein Unterschied
 						if not m.ids[id] and not (theirDone and theirDone[id]) and not IsQuestHidden(id)
-							and not (blockedBy[name] and blockedBy[name][id])
-							and not (learnedBlocked[name] and learnedBlocked[name][id]) then
+							and not (ST.blockedBy[name] and ST.blockedBy[name][id])
+							and not (ST.learnedBlocked[name] and ST.learnedBlocked[name][id]) then
 							theyLack[#theyLack + 1] = id
 						end
 					end
@@ -1140,12 +1238,33 @@ local function GetRow(i)
 	row.share:SetPoint("RIGHT", row, "RIGHT", -8, 0)
 	row.share.bg = row.share:CreateTexture(nil, "BACKGROUND")
 	row.share.bg:SetAllPoints()
-	row.share.bg:SetColorTexture(0.184, 0.42, 0.235, 1)
+	row.share.bg:SetColorTexture(0.15, 0.12, 0.07, 1)   -- Stil wie der Reset-Knopf in SexyHarvester
 	row.share.hl = row.share:CreateTexture(nil, "HIGHLIGHT")
 	row.share.hl:SetAllPoints()
-	row.share.hl:SetColorTexture(1, 1, 1, 0.25)
+	row.share.hl:SetColorTexture(1, 1, 1, 0.12)
 	row.share.text = row.share:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
 	row.share.text:SetAllPoints()
+	row.share.text:SetTextColor(0.91, 0.76, 0.42)
+	-- dünner goldener Rand, immer genau ein Bildschirmpixel stark
+	do
+		local btn, edges = row.share, {}
+		for i, e in ipairs({ { "TOPLEFT", "TOPRIGHT", true }, { "BOTTOMLEFT", "BOTTOMRIGHT", true },
+			{ "TOPLEFT", "BOTTOMLEFT", false }, { "TOPRIGHT", "BOTTOMRIGHT", false } }) do
+			local t = btn:CreateTexture(nil, "BORDER")
+			t:SetColorTexture(0.6, 0.49, 0.22, 1)
+			t:SetPoint(e[1])
+			t:SetPoint(e[2])
+			edges[i] = { tex = t, horizontal = e[3] }
+		end
+		local function Pixel()
+			local px = 1 / math.max(0.2, btn:GetEffectiveScale())
+			for _, e in ipairs(edges) do
+				if e.horizontal then e.tex:SetHeight(px) else e.tex:SetWidth(px) end
+			end
+		end
+		Pixel()
+		btn:HookScript("OnShow", Pixel)
+	end
 	row.share.text:SetText(T("Teilen", "Share"))
 	row.share:RegisterForClicks("LeftButtonUp")
 	row.share:SetScript("OnClick", function()
@@ -1187,26 +1306,53 @@ local function GetRow(i)
 	return row
 end
 
+-- MV (Sammeltabelle statt lokaler Variablen, Lua erlaubt höchstens 200) muss vor ihrer ersten Benutzung stehen
+local MV = { SUM_H = 26, nearTab = "active", NEAR_TAB_H = 32 }   -- nearTab: Reiter in "Quests in der Nähe" ("active" oder "hidden"); in MV statt als eigene Variablen (Grenze von 200 lokalen Variablen)
+
+-- Zieltexte eines Mitspielers zu einer Quest. Stammen sie aus einem Client in einer anderen Sprache (der Absender schickt seine
+-- Sprache mit), stünden sie in dieser Sprache im eigenen Fenster: dann nur der Zähler unter einem neutralen Namen ("Ziel 1: 3/8").
+function MV.Details(name, id)
+	local det = detailsBy[name] and detailsBy[name][id]
+	if not det then return nil end
+	local theirs, mine = detailsBy[name].locale, GetLocale()
+	if not theirs or theirs == mine or (theirs:sub(1, 2) == "en" and mine:sub(1, 2) == "en") then return det end
+	local out = {}
+	for j, text in ipairs(det) do
+		local a, b = tostring(text):match("(%d+)/(%d+)")
+		out[j] = T("Ziel ", "Goal ") .. j .. (a and (": " .. a .. "/" .. b) or "")
+	end
+	return out
+end
+
 local function ConfigureRow(row, e)
 	local isHeader, isQuest = e.kind == "header", e.kind == "quest"
 	row.questId = e.id
 	row:EnableMouse(isQuest)
 	row.bg:SetShown(e.kind ~= "info")
-	row.divider:SetShown(isQuest)
+	row.bg:SetColorTexture(0.145, 0.125, 0.10, cfg.opacity)
+	row.divider:SetShown(isQuest and cfg.showDividers ~= false)
 
-	row.avatar:SetShown(isHeader)
+	row.avatar:SetShown(isHeader and cfg.showAvatar ~= false)
 	row.name:SetShown(isHeader)
 	if isHeader then
 		local r, g, b = ClassColor(e.name)
 		SetClassIcon(row.avatar, e.name)
+		row.avatar:SetSize(cfg.avatarSize or 20, cfg.avatarSize or 20)
 		row.name:SetText(e.name)
 		row.name:SetTextColor(r, g, b)
-		SetPill(row.status, e.tone, e.status, nil, 18)
+		if cfg.showStatus ~= false then
+			SetPill(row.status, e.tone, e.status, nil, 18)
+		else
+			HidePill(row.status)
+		end
+		MV.NameAnchors(row, row.status)
 	else
 		HidePill(row.status)
 	end
 
-	if isQuest then
+	local pills = cfg.showPills ~= false
+	local share = e.share and cfg.showShare ~= false
+	if isQuest and pills then
 		SetPill(row.kind, e.tone, e.label, 66, 16)
 	else
 		HidePill(row.kind)
@@ -1216,14 +1362,15 @@ local function ConfigureRow(row, e)
 	row.fs:ClearAllPoints()
 	if isQuest then
 		row.fs:SetText(QuestName(e.id))
-		row.fs:SetPoint("LEFT", row, "LEFT", 82, 0)
-		row.fs:SetPoint("RIGHT", row, "RIGHT", e.share and -66 or -8, 0)
+		row.fs:SetPoint("LEFT", row, "LEFT", pills and 82 or 8, 0)
+		row.fs:SetPoint("RIGHT", row, "RIGHT", share and -66 or -8, 0)
 	elseif e.kind == "info" then
 		row.fs:SetText("|cff9b9180" .. e.text .. "|r")
 		row.fs:SetPoint("LEFT", row, "LEFT", 8, 0)
 		row.fs:SetPoint("RIGHT", row, "RIGHT", -8, 0)
 	end
-	row.share:SetShown(e.share and true or false)
+	row.share:SetShown(share and true or false)
+	row.share:SetHeight(QUEST_H - 6)
 	UpdateShareButton(row.share)
 end
 
@@ -1232,10 +1379,10 @@ end
 -- Jedes der drei Fenster hat im Titelband einen Knopf "-" / "+"; der Zustand steht in cfg.minMain / minHelp / minNear.
 ---------------------------------------------------------------------------
 -- (alles in einer Tabelle: Lua erlaubt höchstens 200 lokale Variablen je Block)
-local MV = { SUM_H = 26 }
 
 function MV.AddMinButton(f, key, refresh)
 	local b = FlatButton(f, "", 20, 18, 0.2, 0.16, 0.06)
+	f.minFrame = b
 	b:SetPoint("TOPRIGHT", f, "TOPRIGHT", -32, -9)
 	local function Update() b.text:SetText(cfg[key] and "+" or "-") end
 	b:SetScript("OnClick", function()
@@ -1310,13 +1457,31 @@ function MV.Glow(row)
 				self:Hide()
 				return
 			end
-			self.tex:SetAlpha(0.4 * math.abs(math.sin(p * math.pi * 2)) * (1 - p))
+			self.tex:SetAlpha((cfg.glowAlpha or 0.4) * math.abs(math.sin(p * math.pi * 2)) * (1 - p))
 		end)
 		row.glowFx = g
 	end
 	g.t = 0
+	g.tex:SetColorTexture(cfg.glowColor.r, cfg.glowColor.g, cfg.glowColor.b, 1)
 	g.tex:SetAlpha(0)
 	g:Show()
+end
+
+-- Kopfzeile ein-/ausblenden (cfg.hideHeaderMain/Help/Near): Band, Titel, Gebiets-Badge und die Knöpfe im Band verschwinden,
+-- die Inhalte rücken nach oben (MV.Head liefert den Abstand der Inhalte zur Oberkante).
+function MV.Head(f) return f.headerHidden and 6 or BAND_H end
+
+function MV.SetHeader(f, hide)
+	hide = hide and true or false
+	f.headerHidden = hide
+	f.band:SetShown(not hide)
+	f.title:SetShown(not hide)
+	if f.closeBtn then f.closeBtn:SetShown(not hide and cfg.showButtons ~= false) end
+	if f.minFrame then f.minFrame:SetShown(not hide and cfg.showButtons ~= false) end
+	if hide and f.zoneBg then
+		f.zoneBg:Hide()
+		f.zone:Hide()
+	end
 end
 
 function MV.EnsureSummary(f)
@@ -1341,6 +1506,7 @@ function MV.EnsureSummary(f)
 	sum.bar:SetPoint("BOTTOMLEFT", 0, 2)
 	sum.bar:SetHeight(3)
 	sum.bar:SetColorTexture(0.78, 0.64, 0.29, 1)
+	if SEM.ShineBar then SEM:ShineBar(sum.bar) end   -- plastischer Glanz
 	f.sum = sum
 	return sum
 end
@@ -1348,6 +1514,10 @@ end
 -- Zeigt die Zusammenfassung (frac = Fortschritt von 0 bis 1 oder nil) und liefert die Höhe, die sie braucht
 function MV.ShowSummary(f, text, value, frac)
 	local sum = MV.EnsureSummary(f)
+	sum:ClearAllPoints()
+	sum:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -MV.Head(f) - 2)
+	sum:SetSize(WIDTH - 24, MV.SUM_H)
+	sum.barBg:SetWidth(WIDTH - 24)
 	sum.text:SetText(text or "")
 	sum.value:SetText(value or "")
 	sum.barBg:SetShown(frac ~= nil)
@@ -1472,6 +1642,7 @@ local function CreateUI()
 
 	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
 	close:SetPoint("TOPRIGHT", 2, 2)
+	f.closeBtn = close
 	close:SetScript("OnClick", function()
 		forceShow = false
 		dismissedSig = f.sig -- erscheint erst wieder bei neuen Unterschieden
@@ -1485,17 +1656,34 @@ local function CreateUI()
 	if SEM.RegisterAddon then SEM:RegisterAddon("SexyQuestHelper", { title = "SexyQuestHelper" }) end
 	SEM:Register(f, {
 		name = "SexyQuestHelper: " .. T("Gruppenabgleich", "Group sync"),
+		category = T("Gruppe", "Group"),   -- Zwischenüberschrift in der Seitenleiste des Einstellungsfensters
 		addon = "SexyQuestHelper",
 		group = "sqh", groupName = "SexyQuestHelper",   -- Tabs im Edit-Mode-Dialog
 		description = T("Vergleicht die Quests deines Gebiets mit der Gruppe und zeigt, was abweicht.", "Compares the quests of your zone with your group and shows what differs."),
+		sample = SexyQuestHelperSamples and SexyQuestHelperSamples.main,   -- Vorschau im Einstellungsfenster: eigenes Fenster mit eigener Logik (Samples.lua)
 		db = db,
 		settings = {
-			{ type = "link", name = T("Mitspielern helfen", "Help your group"), frame = function() return helpUI end },
-			{ type = "link", name = T("Quests in der Nähe", "Quests nearby"), frame = function() return nearUI end },
+			-- Gruppe 1: was die Vorschau verändert; Gruppe 2: Verhalten; Gruppe 3: Erscheinen
+			{ type = "header", name = T("Darstellung", "Look"), id = "look" },
+			{ type = "check", name = T("Kopfzeile ausblenden", "Hide header"),
+				get = function() return cfg.hideHeaderMain end,
+				set = function(v) cfg.hideHeaderMain = v and true or false; Refresh() end },
+			{ type = "check", name = T("Gebiet im Titel ausblenden", "Hide the zone in the title"),
+				get = function() return cfg.hideZone end,
+				set = function(v) cfg.hideZone = v and true or false; Refresh() end },
+			MV.Spec("width"), MV.Spec("rowH"), MV.Spec("cardGap"), MV.Spec("opacity"), MV.Spec("showShare"), MV.Spec("showPills"),
+			MV.Spec("fontDelta"), MV.Spec("bandH"), MV.Spec("bgColor"), MV.Spec("borderColor"), MV.Spec("showAvatar"), MV.Spec("avatarSize"),
+			MV.Spec("showStatus"), MV.Spec("showDividers"), MV.Spec("showButtons"),
+			{ type = "header", name = T("Verhalten", "Behavior"), id = "behavior" },
 			MV.CombatSpec("minMain"),
 			{ type = "check", behavior = true, name = T("Fenster \"Mitspielern helfen\" einschalten", "Turn on the \"Help your group\" window"),
 				get = function() return cfg.helpAuto end,
 				set = function(v) cfg.helpAuto = v and true or false; Refresh() end },
+			{ type = "check", behavior = true, name = T("Fehlende Quests automatisch teilen", "Share missing quests automatically"),
+				get = function() return cfg.autoShare end,
+				set = function(v) cfg.autoShare = v and true or false end },
+			{ type = "link", name = T("Mitspielern helfen", "Help your group"), frame = function() return helpUI end },
+			{ type = "link", name = T("Quests in der Nähe", "Quests nearby"), frame = function() return nearUI end },
 			{ type = "header", name = T("Erscheinen", "Appearing"), id = "appear" },
 			{ type = "slider", behavior = true, name = T("Verzögerung bis zum Erscheinen", "Delay before appearing"),
 				min = 1, max = 10, step = 1,
@@ -1510,10 +1698,6 @@ local function CreateUI()
 			{ type = "check", behavior = true, name = T("Ton beim Erscheinen", "Sound when appearing"),
 				get = function() return cfg.sound end,
 				set = function(v) cfg.sound = v and true or false end },
-			{ type = "header", name = T("Darstellung", "Look"), id = "look", collapsed = true },
-			{ type = "check", name = T("Gebiet im Titel ausblenden", "Hide the zone in the title"),
-				get = function() return cfg.hideZone end,
-				set = function(v) cfg.hideZone = v and true or false; Refresh() end },
 		},
 		onMoved = function(self) db.anchoredHeight = self:GetHeight() end,
 		onEditMode = function(active)
@@ -1573,21 +1757,22 @@ function Refresh()
 		return
 	end
 
+	MV.SetHeader(ui, cfg.hideHeaderMain)
 	ui.zone:SetText(myZone ~= "" and myZone or "?")
 	ui.zone:SetWidth(0) -- Breite zuruecksetzen, dann natuerliche Breite messen
 	local zoneWidth = math.min(ui.zone:GetStringWidth(), 150)
 	ui.zone:SetWidth(zoneWidth)
 	ui.zoneBg:SetWidth(zoneWidth + 18)
-	ui.zone:SetShown(not cfg.hideZone)
-	ui.zoneBg:SetShown(not cfg.hideZone)
+	ui.zone:SetShown(not cfg.hideZone and not ui.headerHidden)
+	ui.zoneBg:SetShown(not cfg.hideZone and not ui.headerHidden)
 
-	local y = BAND_H + 8
+	local y = MV.Head(ui) + 8
 	-- Kleine Ansicht: nur Titelband und eine Zeile
 	local shown = entries
 	if MV.IsMin("minMain") then
 		shown = {}
 		local text, value = MV.MainSummary(entries)
-		y = BAND_H - 4 + MV.ShowSummary(ui, text, value)
+		y = MV.Head(ui) - 4 + MV.ShowSummary(ui, text, value)
 	else
 		MV.HideSummary(ui)
 	end
@@ -1722,6 +1907,7 @@ local function GetGoal(row, j)
 	g.bar = g:CreateTexture(nil, "ARTWORK")
 	g.bar:SetPoint("BOTTOMLEFT", g.barBg, "BOTTOMLEFT")
 	g.bar:SetHeight(3)
+	if SEM.ShineBar then SEM:ShineBar(g.bar) end
 	row.goals[j] = g
 	return g
 end
@@ -1796,17 +1982,22 @@ local function RenderGoals(row, goals, top)
 	local y = top
 	for j, goal in ipairs(goals) do
 		local g = GetGoal(row, j)
+		local counts = goal.count and cfg.showCounts ~= false
 		-- Badges der Gruppenmitglieder rechts, direkt vor dem eigenen Stand; der Zieltext endet davor
-		local own = goal.count and (38 + 4) or 0
+		local own = counts and (38 + 4) or 0
 		local cw = LayoutChips(g, g.chips, goal.mates, 8 + own, 3)
-		g.text:SetWidth(WIDTH - 24 - GOAL_TEXT_X - 8 - (goal.count and (38 + 6) or 0) - ((cw > 0) and (cw + 6) or 0))
+		g.text:SetWidth(WIDTH - 24 - GOAL_TEXT_X - 8 - (counts and (38 + 6) or 0) - ((cw > 0) and (cw + 6) or 0))
 		g.text:SetText(goal.name)
-		local h = math.max(GOAL_H, math.ceil(g.text:GetStringHeight()) + 14)
+		local barH = cfg.barH or 3
+		local h = math.max(GOAL_H, math.ceil(g.text:GetStringHeight()) + 14) + math.max(0, barH - 3)
+		g.barBg:SetHeight(barH)
+		g.bar:SetHeight(barH)
 		g:ClearAllPoints()
 		g:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -y)
 		g:SetSize(WIDTH - 24, h)
 		y = y + h
 
+		g.icon:SetShown(cfg.showChecks ~= false)
 		if goal.done then
 			g.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
 			g.icon:SetVertexColor(0.45, 0.9, 0.55)
@@ -1818,9 +2009,14 @@ local function RenderGoals(row, goals, top)
 		end
 
 		if goal.count then
-			SetPill(g.pill, goal.done and "ok" or "warn", goal.count, 38, 14)
-			g.barBg:Show()
-			g.bar:Show()
+			if counts then
+				SetPill(g.pill, goal.done and "ok" or "warn", goal.count, 38, 14)
+			else
+				HidePill(g.pill)
+			end
+			local bars = cfg.showBars ~= false
+			g.barBg:SetShown(bars)
+			g.bar:SetShown(bars)
 			g.bar:SetWidth(math.max(1, (WIDTH - 24 - GOAL_TEXT_X - 8) * (goal.frac or 0)))
 			if goal.done then g.bar:SetColorTexture(0.30, 0.76, 0.42, 1) else g.bar:SetColorTexture(0.94, 0.75, 0.29, 1) end
 		else
@@ -1838,9 +2034,9 @@ local function RenderGoals(row, goals, top)
 end
 
 local HELP_ROW_H, HELP_HEAD_H = 26, 28   -- Questzeile, Kopfzeile
-local helpRows = {}
-local helpForce = false      -- per /sqh help erzwungen
-local helpDismissed = nil    -- weggeklickte Zusammenstellung (Mitglieder und Quests)
+ST.helpRows = {}
+ST.helpForce = false      -- per /sqh help erzwungen
+ST.helpDismissed = nil    -- weggeklickte Zusammenstellung (Mitglieder und Quests)
 
 -- Eintraege: { kind = "header", name, count } / { kind = "quest", id | title, pct, ready } / { kind = "info", text }
 local function BuildHelp()
@@ -1867,7 +2063,9 @@ local function BuildHelp()
 				else
 					mine = IsDone(id)
 				end
-				if mine and not IsQuestHidden(id) then quests[#quests + 1] = id end
+				-- Hat der Mitspieler die Quest selbst schon fertig (bereit zur Abgabe), braucht er keine Hilfe mehr
+				local theirs = progressBy[name] and progressBy[name][id]
+				if mine and not (theirs and theirs.ready) and not IsQuestHidden(id) then quests[#quests + 1] = id end
 			end
 			if #quests > 0 then
 				table.sort(quests)
@@ -1875,7 +2073,7 @@ local function BuildHelp()
 				for _, id in ipairs(quests) do
 					local p = progressBy[name] and progressBy[name][id]
 					entries[#entries + 1] = { kind = "quest", id = id, pct = p and p.pct, ready = p and p.ready,
-						objs = detailsBy[name] and detailsBy[name][id] }
+						objs = MV.Details(name, id) }
 				end
 				parts[#parts + 1] = name .. ":" .. table.concat(quests, ",")
 			end
@@ -1897,7 +2095,7 @@ local function OpenHelpQuest(id)
 end
 
 local function GetHelpRow(i)
-	local row = helpRows[i]
+	local row = ST.helpRows[i]
 	if row then return row end
 	row = CreateFrame("Frame", nil, helpUI)
 	row.bg = row:CreateTexture(nil, "BACKGROUND")
@@ -1965,7 +2163,7 @@ local function GetHelpRow(i)
 			local unit = unitByName[name]
 			if not unit then return end
 			if InCombatLockdown() then
-				print("SexyQuestHelper: " .. T("Im Kampf nicht möglich.", "Not possible in combat."))
+				print("|cffe8c26a[SQH]|r " .. T("Im Kampf nicht möglich.", "Not possible in combat."))
 			else
 				pcall(TargetUnit, unit)
 			end
@@ -1984,7 +2182,7 @@ local function GetHelpRow(i)
 	row.divider:SetHeight(1)
 	row.divider:SetColorTexture(0.21, 0.19, 0.14, 1)
 	row.goals = {}
-	helpRows[i] = row
+	ST.helpRows[i] = row
 	return row
 end
 
@@ -2012,15 +2210,16 @@ end
 local function ConfigureHelpRow(row, e, goals)
 	local isHeader, isQuest = e.kind == "header", e.kind == "quest"
 	row.bg:SetShown(e.kind ~= "info")
-	row.bg:SetColorTexture(isHeader and 0.165 or 0.145, isHeader and 0.14 or 0.125, isHeader and 0.10 or 0.10, 1)
-	row.avatar:SetShown(isHeader)
+	row.bg:SetColorTexture(isHeader and 0.165 or 0.145, isHeader and 0.14 or 0.125, isHeader and 0.10 or 0.10, cfg.opacity)
+	row.avatar:SetShown(isHeader and cfg.showAvatar ~= false)
 	row.name:SetShown(isHeader)
 	row.fs:SetShown(not isHeader)
 	row.member = isHeader and e.name or nil
 	row.questId = isQuest and e.id or nil
 	row:EnableMouse(isHeader or row.questId ~= nil)
 	row.hl:SetShown(row.questId ~= nil)
-	row.accent:SetShown(isQuest)
+	row.accent:SetShown(isQuest and cfg.showAccent ~= false)
+	row.accent:SetWidth(cfg.accentW or 3)
 	row.divider:SetShown(false)
 	row.pill.tex:ClearAllPoints()
 
@@ -2033,9 +2232,15 @@ local function ConfigureHelpRow(row, e, goals)
 	if isHeader then
 		local r, g, b = ClassColor(e.name)
 		SetClassIcon(row.avatar, e.name)
+		row.avatar:SetSize((cfg.avatarSize or 20) - 2, (cfg.avatarSize or 20) - 2)
 		row.name:SetText(e.name)
 		row.name:SetTextColor(r, g, b)
-		SetPill(row.pill, "they", e.count .. " " .. T("Quests", "quests"), nil, 18)
+		if cfg.showStatus ~= false then
+			SetPill(row.pill, "they", e.count .. " " .. T("Quests", "quests"), nil, 18)
+		else
+			HidePill(row.pill)
+		end
+		MV.NameAnchors(row, row.pill)
 		for _, g2 in ipairs(row.goals) do g2:Hide() end
 	elseif isQuest then
 		row.fs:SetFontObject("SexyQuestHelperText")
@@ -2123,9 +2328,10 @@ local function CreateHelpUI()
 
 	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
 	close:SetPoint("TOPRIGHT", 2, 2)
+	f.closeBtn = close
 	close:SetScript("OnClick", function()
-		helpForce = false
-		helpDismissed = f.sig -- erscheint erst wieder bei einer anderen Zusammenstellung
+		ST.helpForce = false
+		ST.helpDismissed = f.sig -- erscheint erst wieder bei einer anderen Zusammenstellung
 		f:Hide()
 	end)
 	MV.AddMinButton(f, "minHelp", function() RefreshHelp() end)
@@ -2133,13 +2339,21 @@ local function CreateHelpUI()
 	f:Hide()
 	SEM:Register(f, {
 		name = "SexyQuestHelper: " .. T("Mitspielern helfen", "Help your group"),
+		category = T("Gruppe", "Group"),   -- Zwischenüberschrift in der Seitenleiste des Einstellungsfensters
 		addon = "SexyQuestHelper",
 		group = "sqh", groupName = "SexyQuestHelper",   -- Tabs im Edit-Mode-Dialog
 		description = T("Quests, die du schon erledigt hast und Mitspieler noch haben, mit deren Einzelzielen.", "Quests you have finished that group members still have, with their single goals."),
+		sample = SexyQuestHelperSamples and SexyQuestHelperSamples.help,   -- Vorschau im Einstellungsfenster: eigenes Fenster mit eigener Logik (Samples.lua)
 		db = db,
 		settings = {
-			{ type = "link", name = "SexyQuestHelper", frame = function() return ui end },
-			{ type = "header", name = T("Mitspielern helfen", "Help your group"), id = "help" },
+			{ type = "header", name = T("Darstellung", "Look"), id = "look" },
+			{ type = "check", name = T("Kopfzeile ausblenden", "Hide header"),
+				get = function() return cfg.hideHeaderHelp end,
+				set = function(v) cfg.hideHeaderHelp = v and true or false; RefreshHelp() end },
+			MV.Spec("width"), MV.Spec("rowH"), MV.Spec("cardGap"), MV.Spec("opacity"), MV.Spec("showBars"), MV.Spec("barH"),
+			MV.Spec("fontDelta"), MV.Spec("bandH"), MV.Spec("bgColor"), MV.Spec("borderColor"), MV.Spec("showAvatar"), MV.Spec("avatarSize"),
+			MV.Spec("showStatus"), MV.Spec("showAccent"), MV.Spec("accentW"), MV.Spec("showChecks"), MV.Spec("showCounts"), MV.Spec("showButtons"),
+			{ type = "header", name = T("Verhalten", "Behavior"), id = "help" },
 			MV.CombatSpec("minHelp"),
 			{ type = "check", behavior = true, name = T("Fenster einschalten (öffnet sich von selbst)", "Turn the window on (opens by itself)"),
 				get = function() return cfg.helpAuto end,
@@ -2147,6 +2361,7 @@ local function CreateHelpUI()
 			{ type = "check", behavior = true, name = T("Auch Quests zählen, die du noch im Log hast und nur abgeben musst", "Also count quests still in your log that you only have to hand in"),
 				get = function() return cfg.helpReady end,
 				set = function(v) cfg.helpReady = v and true or false; Refresh() end },
+			{ type = "link", name = "SexyQuestHelper", frame = function() return ui end },
 		},
 		onMoved = function(self) db.anchoredHeight = self:GetHeight() end,
 	})
@@ -2157,8 +2372,8 @@ function RefreshHelp()
 	if not helpUI then return end
 	local entries, sig = BuildHelp()
 	helpUI.sig = sig
-	local auto = cfg.helpAuto and scanReady and #entries > 0 and sig ~= helpDismissed
-	if not (helpForce or testMode or auto) then
+	local auto = cfg.helpAuto and scanReady and #entries > 0 and sig ~= ST.helpDismissed
+	if not (ST.helpForce or testMode or auto) then
 		helpUI:Hide()
 		return
 	end
@@ -2166,15 +2381,24 @@ function RefreshHelp()
 		entries[1] = { kind = "info", text = T("Niemand braucht gerade Hilfe.", "Nobody needs help right now.") }
 	end
 
-	local y = BAND_H + 8
+	MV.SetHeader(helpUI, cfg.hideHeaderHelp)
+	local y = MV.Head(helpUI) + 8
 	-- Kleine Ansicht: nur Titelband und eine Zeile
 	local shown = entries
 	if MV.IsMin("minHelp") then
 		shown = {}
-		local text, value, frac = MV.HelpSummary(entries)
-		y = BAND_H - 4 + MV.ShowSummary(helpUI, text, value, frac)
+		MV.HideSummary(helpUI)
+		-- wer braucht was: je Mitspieler eine Zeile, darunter seine Quests (wie die Zielzeilen in "Quests in der Nähe")
+		local custom = {}
+		for _, e in ipairs(entries) do
+			if e.kind == "header" then custom[#custom + 1] = { member = true, name = e.name, count = e.count }
+			elseif e.kind == "quest" then custom[#custom + 1] = { help = true, id = e.id, title = e.title, pct = e.pct, ready = e.ready }
+			elseif e.text then custom[#custom + 1] = { none = true, text = e.text } end
+		end
+		y = MV.Head(helpUI) + MV.ShowMiniList(helpUI, nil, nil, custom) - 1
 	else
 		MV.HideSummary(helpUI)
+		if helpUI.mini then helpUI.mini:Hide() end
 	end
 	for i, e in ipairs(shown) do
 		local row = GetHelpRow(i)
@@ -2188,7 +2412,7 @@ function RefreshHelp()
 		row:SetHeight(h)
 		y = y + h
 	end
-	for i = #shown + 1, #helpRows do helpRows[i]:Hide() end
+	for i = #shown + 1, #ST.helpRows do ST.helpRows[i]:Hide() end
 
 	-- Oberkante bleibt stehen (wie beim Hauptfenster)
 	local newHeight = y + 12
@@ -2208,17 +2432,152 @@ end
 ---------------------------------------------------------------------------
 
 local NEAR_ROW_H = 26   -- Kopfzeile einer Quest
-local nearRows = {}
-local nearForce = false       -- per /sqh near erzwungen
-local nearDismissed = nil     -- weggeklickte Zusammenstellung
-local nearKnown = {}          -- Quests, die beim letzten Durchlauf schon in der Naehe waren (fuer den Ton)
-local nearSeen = {}           -- Quest -> Zeitpunkt, zu dem sie zuletzt in der Naehe war
-local NEAR_AGAIN = 120        -- Sekunden: eine Quest, die so kurz zuvor schon da war (Grenze der Reichweite), zaehlt nicht als neu
-local pointsCache = {}        -- [Quest] = { zoneKey, points = { {x, y}, ... }, known = Zahl der Punkte aus QuestieDB }
-local progressAt = {}         -- [Quest] = GetTime() des letzten Fortschritts (für Quests ohne festen Ort)
-local areaNames = {}          -- [AreaId] = Name oder false
 
-local areaMaps = {}           -- [AreaId] = UiMapID (aus Questies ZoneDB) oder false
+-- Größen und Aussehen nach den Einstellungen (Breite, Zeilenhöhe, Kartenabstand, Deckkraft); wirkt auf alle drei Fenster
+function MV.ApplySizes()
+	WIDTH = cfg.width
+	QUEST_H = cfg.rowH
+	HEADER_H = cfg.rowH + 6
+	HELP_ROW_H = cfg.rowH + 2
+	HELP_HEAD_H = cfg.rowH + 4
+	NEAR_ROW_H = cfg.rowH + 2
+	CARD_GAP = cfg.cardGap
+	MV.MINI_W = WIDTH
+	BAND_H = cfg.bandH
+	-- Schriftgrößen (die drei Schriftobjekte gelten für alle Texte der Fenster)
+	local d = cfg.fontDelta or 0
+	if SexyQuestHelperTitle then SexyQuestHelperTitle:SetFont(LoadFont("Marcellus-Regular.ttf"), 14 + d, "") end
+	if SexyQuestHelperText then SexyQuestHelperText:SetFont(LoadFont("Inter.ttf"), 13 + d, "") end
+	if SexyQuestHelperSmall then SexyQuestHelperSmall:SetFont(LoadFont("Inter.ttf"), 11 + d, "") end
+	for _, f in ipairs({ ui, helpUI, nearUI }) do
+		if f then
+			f:SetWidth(WIDTH)
+			f:SetBackdropColor(cfg.bgColor.r, cfg.bgColor.g, cfg.bgColor.b, cfg.opacity)
+			f:SetBackdropBorderColor(cfg.borderColor.r, cfg.borderColor.g, cfg.borderColor.b, 1)
+			if f.band then
+				f.band:SetHeight(BAND_H - 3)
+				f.band:SetColorTexture(0.15, 0.12, 0.07, cfg.opacity)
+				f.title:ClearAllPoints()
+				f.title:SetPoint("LEFT", f.band, "LEFT", 9, 0)
+				if f.zoneBg then
+					f.zoneBg:ClearAllPoints()
+					f.zoneBg:SetPoint("RIGHT", f.band, "RIGHT", -53, 0)
+				end
+				if f.minFrame then
+					f.minFrame:ClearAllPoints()
+					f.minFrame:SetPoint("RIGHT", f.band, "RIGHT", -29, 0)
+				end
+			end
+		end
+	end
+	if nearUI then
+		nearUI.scroll:SetWidth(WIDTH)
+		nearUI.content:SetWidth(WIDTH)
+	end
+end
+
+-- Name der Mitspieler-Kopfzeile: links am Klassensymbol (oder am Rand), rechts am Etikett (oder am Rand)
+function MV.NameAnchors(row, pill)
+	row.name:ClearAllPoints()
+	if cfg.showAvatar ~= false then
+		row.name:SetPoint("LEFT", row.avatar, "RIGHT", 8, 0)
+	else
+		row.name:SetPoint("LEFT", row, "LEFT", 8, 0)
+	end
+	if cfg.showStatus ~= false then
+		row.name:SetPoint("RIGHT", pill.tex, "LEFT", -6, 0)
+	else
+		row.name:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+	end
+end
+
+-- weitere Aussehen-Werte: key = { Art, Name de, Name en, [min, max, Schritt, Faktor, Format] }
+MV.NEW = {
+	fontDelta = { "slider", "Schriftgröße", "Font size", -2, 4, 1, 1, function(v) return (v > 0 and "+" or "") .. v end },
+	bandH = { "slider", "Höhe der Titelleiste", "Height of the title band", 26, 40, 1, 1, function(v) return v .. " px" end },
+	avatarSize = { "slider", "Größe des Klassensymbols", "Size of the class icon", 14, 28, 1, 1, function(v) return v .. " px" end },
+	accentW = { "slider", "Breite des Farbstreifens", "Width of the colored stripe", 2, 8, 1, 1, function(v) return v .. " px" end },
+	glowAlpha = { "slider", "Stärke des Aufleuchtens", "Strength of the glow", 10, 80, 5, 100, function(v) return v .. " %" end },
+	showAvatar = { "check", "Klassensymbol der Mitspieler zeigen", "Show the class icon of the members" },
+	showStatus = { "check", "Etiketten der Mitspieler zeigen", "Show the labels of the members" },
+	showAccent = { "check", "Farbstreifen links zeigen", "Show the colored stripe on the left" },
+	showDividers = { "check", "Trennlinien zeigen", "Show the dividers" },
+	showDist = { "check", "Entfernung zeigen", "Show the distance" },
+	showChecks = { "check", "Kästchen vor den Zielen zeigen", "Show the boxes before the goals" },
+	showCounts = { "check", "Zähler der Ziele zeigen", "Show the counters of the goals" },
+	showButtons = { "check", "Knöpfe in der Titelleiste zeigen", "Show the buttons in the title band" },
+	showScroll = { "check", "Scrollbalken zeigen", "Show the scroll bar" },
+	bgColor = { "color", "Hintergrundfarbe", "Background color" },
+	borderColor = { "color", "Randfarbe", "Border color" },
+	glowColor = { "color", "Farbe des Aufleuchtens", "Color of the glow", },
+}
+
+-- Einstellungszeile zu einem Aussehen-Wert (key: width, rowH, cardGap, opacity, showShare, showPills, showBars, barH und MV.NEW)
+function MV.Spec(key)
+	local function Apply()
+		MV.ApplySizes()
+		Refresh()
+	end
+	local d = MV.NEW[key]
+	if d then
+		local name = T(d[2], d[3])
+		if d[1] == "slider" then
+			local scale = d[7]
+			return { type = "slider", name = name, min = d[4], max = d[5], step = d[6], format = d[8],
+				get = function() return math.floor((cfg[key] or 0) * scale + 0.5) end,
+				set = function(v) cfg[key] = v / scale; Apply() end }
+		elseif d[1] == "check" then
+			return { type = "check", name = name,
+				get = function() return cfg[key] ~= false end,
+				set = function(v) cfg[key] = v and true or false; Apply() end }
+		else
+			return { type = "color", name = name,
+				get = function() local c = cfg[key]; return c.r, c.g, c.b, 1 end,
+				set = function(r, g, b) cfg[key] = { r = r, g = g, b = b }; Apply() end }
+		end
+	end
+	if key == "width" then
+		return { type = "slider", name = T("Breite der Fenster", "Width of the windows"), min = 280, max = 560, step = 4,
+			get = function() return cfg.width end, set = function(v) cfg.width = v; Apply() end,
+			format = function(v) return v .. " px" end }
+	elseif key == "rowH" then
+		return { type = "slider", name = T("Zeilenhöhe", "Row height"), min = 18, max = 40, step = 1,
+			get = function() return cfg.rowH end, set = function(v) cfg.rowH = v; Apply() end,
+			format = function(v) return v .. " px" end }
+	elseif key == "cardGap" then
+		return { type = "slider", name = T("Abstand der Karten", "Gap between cards"), min = 0, max = 16, step = 1,
+			get = function() return cfg.cardGap end, set = function(v) cfg.cardGap = v; Apply() end,
+			format = function(v) return v .. " px" end }
+	elseif key == "opacity" then
+		return { type = "slider", name = T("Deckkraft der Fenster", "Window opacity"), min = 30, max = 100, step = 2,
+			get = function() return math.floor(cfg.opacity * 100 + 0.5) end, set = function(v) cfg.opacity = v / 100; Apply() end,
+			format = function(v) return v .. " %" end }
+	elseif key == "barH" then
+		return { type = "slider", name = T("Höhe der Fortschrittsbalken", "Height of the progress bars"), min = 2, max = 10, step = 1,
+			get = function() return cfg.barH or 3 end, set = function(v) cfg.barH = v; Apply() end,
+			format = function(v) return v .. " px" end }
+	elseif key == "showShare" then
+		return { type = "check", name = T("Teilen-Knopf zeigen", "Show the share button"),
+			get = function() return cfg.showShare ~= false end, set = function(v) cfg.showShare = v and true or false; Apply() end }
+	elseif key == "showPills" then
+		return { type = "check", name = T("Etiketten bei den Quests zeigen", "Show the labels on the quests"),
+			get = function() return cfg.showPills ~= false end, set = function(v) cfg.showPills = v and true or false; Apply() end }
+	else
+		return { type = "check", name = T("Fortschrittsbalken der Ziele zeigen", "Show the progress bars of the goals"),
+			get = function() return cfg.showBars ~= false end, set = function(v) cfg.showBars = v and true or false; Apply() end }
+	end
+end
+ST.nearRows = {}
+ST.nearForce = false       -- per /sqh near erzwungen
+ST.nearDismissed = nil     -- weggeklickte Zusammenstellung
+ST.nearKnown = {}          -- Quests, die beim letzten Durchlauf schon in der Naehe waren (fuer den Ton)
+ST.nearSeen = {}           -- Quest -> Zeitpunkt, zu dem sie zuletzt in der Naehe war
+ST.NEAR_AGAIN = 120        -- Sekunden: eine Quest, die so kurz zuvor schon da war (Grenze der Reichweite), zaehlt nicht als neu
+ST.pointsCache = {}        -- [Quest] = { zoneKey, points = { {x, y}, ... }, known = Zahl der Punkte aus QuestieDB }
+ST.progressAt = {}         -- [Quest] = GetTime() des letzten Fortschritts (für Quests ohne festen Ort)
+ST.areaNames = {}          -- [AreaId] = Name oder false
+
+ST.areaMaps = {}           -- [AreaId] = UiMapID (aus Questies ZoneDB) oder false
 
 local debugAreas              -- nur fuer /sqh near debug: [AreaId] = true, alle gesehenen Gebiete
 
@@ -2236,13 +2595,21 @@ local function Wanted(mapID, ...)
 		local n = NormName((select(i, ...)))
 		if n then wanted.names[n] = true end
 	end
+	-- Gebiet mit Ersatz (z. B. Alterac-Gebirge -> Hillsbrad): Ziele im Ersatzgebiet zählen mit
+	local alias = mapID and SexyQuestHelperZoneAlias[mapID]
+	if alias then
+		wanted.aliasMapID = alias
+		local info = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(alias)
+		local n = info and NormName(info.name)
+		if n then wanted.names[n] = true end
+	end
 	return wanted
 end
 
 -- Questie (falls geladen) kennt die Zuordnung AreaId -> UiMapID; damit ist der Vergleich unabhaengig
 -- von der Client-Sprache. Nil = keine Zuordnung bekannt.
 local function AreaToMap(areaId)
-	local m = areaMaps[areaId]
+	local m = ST.areaMaps[areaId]
 	if m == nil then
 		m = false
 		local loader = _G.QuestieLoader
@@ -2253,19 +2620,19 @@ local function AreaToMap(areaId)
 				if ok2 and type(id) == "number" and id > 0 then m = id end
 			end
 		end
-		areaMaps[areaId] = m
+		ST.areaMaps[areaId] = m
 	end
 	return m or nil
 end
 
 local function AreaName(areaId)
-	local name = areaNames[areaId]
+	local name = ST.areaNames[areaId]
 	if name == nil then
 		local ok, value = pcall(function()
 			if C_Map and C_Map.GetAreaInfo then return C_Map.GetAreaInfo(areaId) end
 		end)
 		name = ok and value or false
-		areaNames[areaId] = name
+		ST.areaNames[areaId] = name
 	end
 	return name or nil
 end
@@ -2276,7 +2643,7 @@ local function AreaMatches(areaId, wanted)
 	if wanted.areaId and areaId == wanted.areaId then return true end
 
 	local m = AreaToMap(areaId)
-	if m and m == wanted.mapID then return true end
+	if m and (m == wanted.mapID or m == wanted.aliasMapID) then return true end
 
 	local n = NormName(AreaName(areaId))
 	return n and wanted.names[n] and true or false
@@ -2296,7 +2663,7 @@ local function AddSpawns(points, spawns, wanted)
 end
 
 local function QuestPoints(id, wanted, zoneKey)
-	local cached = pointsCache[id]
+	local cached = ST.pointsCache[id]
 	if cached and cached.zoneKey == zoneKey then return cached.points, cached.known end
 
 	local points = {}
@@ -2359,7 +2726,7 @@ local function QuestPoints(id, wanted, zoneKey)
 		for _, c in ipairs(learned[zoneKey]) do points[#points + 1] = c end
 	end
 
-	pointsCache[id] = { zoneKey = zoneKey, points = points, known = known, notes = notes }
+	ST.pointsCache[id] = { zoneKey = zoneKey, points = points, known = known, notes = notes }
 	return points, known
 end
 
@@ -2376,6 +2743,121 @@ local function ZoneMap()
 		if info.mapType == zoneType then return mapID, info.name end
 		mapID = info.parentMapID
 	end
+end
+
+-- Für QuestTargets.lua: Namen der Kreaturen, die im aktuellen Gebiet leben und einen Gegenstand dieser Quest fallen lassen
+-- (Droppquellen aus QuestieDB, nur solche mit Spawns hier). Ohne QuestieDB leer.
+_G.SexyQuestHelperAPI = _G.SexyQuestHelperAPI or {}
+-- Zustand für die Vorschau im Einstellungsfenster (Samples.lua zeichnet eigene Fenster damit)
+function SexyQuestHelperAPI.Sample()
+	return { cfg = cfg, WIDTH = WIDTH, T = T }
+end
+-- Für QuestTargets.lua: hat die Quest (laut QuestieDB) Ziele im aktuellen Gebiet? Der Kopf im Questlog zeigt nur, wo man
+-- sie angenommen hat (z. B. Donnerfels), die Ziele können woanders liegen (Eschental).
+function SexyQuestHelperAPI.QuestHere(questId)
+	local ok, here = pcall(function()
+		local mapID, mapName = ZoneMap()
+		if not mapID then return false end
+		local _, known = QuestPoints(questId, Wanted(mapID, GetRealZoneText(), mapName), mapID)
+		return (known or 0) > 0
+	end)
+	return ok and here or false
+end
+-- Für QuestTargets.lua: Entfernung (in Metern) von dir zum nächsten Zielort der Quest im aktuellen Gebiet, aus den Orten
+-- von QuestieDB (wie in "Quests in der Nähe"); nil, wenn keine Position oder kein Ort bekannt ist.
+function SexyQuestHelperAPI.QuestDistance(questId)
+	local ok, dist = pcall(function()
+		local mapID, mapName = ZoneMap()
+		if not mapID then return nil end
+		local pos = C_Map.GetPlayerMapPosition(mapID, "player")
+		if not pos then return nil end
+		local px, py = pos:GetXY()
+		if not (px and py) or (px == 0 and py == 0) then return nil end
+		local width, height = 4000, 3000
+		if C_Map.GetMapWorldSize then
+			local w, h = C_Map.GetMapWorldSize(mapID)
+			if w and h and w > 0 and h > 0 then width, height = w, h end
+		end
+		local points = QuestPoints(questId, Wanted(mapID, GetRealZoneText(), mapName), mapID)
+		local best
+		for _, c in ipairs(points or {}) do
+			local dx, dy = (px - c[1] / 100) * width, (py - c[2] / 100) * height
+			local d = math.sqrt(dx * dx + dy * dy)
+			if not best or d < best then best = d end
+		end
+		return best
+	end)
+	return ok and dist or nil
+end
+-- Für QuestTargets.lua: Reichweite von "Quests in der Nähe" in Metern (gleiche Grenze für die Quest-Aktionen)
+function SexyQuestHelperAPI.NearRadius() return cfg.nearRadius end
+-- Für QuestTargets.lua: { [Monstername] = Kreatur-ID } der Ziele einer Quest aus QuestieDB (für das 3D-Bild). Ohne QuestieDB leer.
+function SexyQuestHelperAPI.MobIds(questId)
+	local ids = {}
+	if not HasQuestieDB() then return ids end
+	pcall(function()
+		local obj = QuestDB.Get(questId, "objectives") or {}
+		local function add(npcId)
+			local name = npcId and NpcDB.Get(npcId, "name")
+			if type(name) == "string" and name ~= "" and not ids[name] then ids[name] = npcId end
+		end
+		for _, e in ipairs(obj[1] or {}) do add(e[1]) end
+		for _, e in ipairs(obj[5] or {}) do for _, n in ipairs(e[1] or {}) do add(n) end end
+	end)
+	return ids
+end
+-- Für QuestTargets.lua: lebt die Kreatur laut QuestieDB im aktuellen Gebiet? Beschworene Wesen und Ereignisziele
+-- (z. B. "Auge von Kilrogg zur Straße geführt") haben keine Spawns in der Welt.
+function SexyQuestHelperAPI.MobHere(npcId)
+	local ok, here = pcall(function()
+		local mapID, mapName = ZoneMap()
+		if not (mapID and npcId) then return false end
+		local spawns = NpcDB.Get(npcId, "spawns")
+		-- Kennt QuestieDB gar keine Spawns (Lücke in den Daten), wird das Monster nicht ausgeblendet; nur "lebt woanders" blendet aus
+		if type(spawns) ~= "table" or next(spawns) == nil then return true end
+		local probe = {}
+		AddSpawns(probe, spawns, Wanted(mapID, GetRealZoneText(), mapName))
+		return #probe > 0
+	end)
+	return ok and here or false
+end
+-- itemIndex/objText (optional): nur die Gegenstandsziele, die zu diesem Eintrag im Questlog gehören (Zieltext oder n-tes Gegenstandsziel);
+-- ohne sie zählen alle Gegenstände der Quest. Sonst bekäme jede Kreatur die Zahl des ersten Ziels ("7/10" auch für die Spinne mit 0/1).
+function SexyQuestHelperAPI.DropMobs(questId, limit, itemIndex, objText)
+	local names, ids = {}, {}   -- zweiter Rückgabewert: { [Name] = Kreatur-ID } für das 3D-Bild
+	if not HasQuestieDB() then return names, ids end
+	pcall(function()
+		local mapID, mapName = ZoneMap()
+		local wanted = Wanted(mapID, GetRealZoneText(), mapName)
+		local obj = QuestDB.Get(questId, "objectives") or {}
+		local items = obj[3] or {}
+		if objText or itemIndex then
+			local low = type(objText) == "string" and strlower(objText) or nil
+			local picked = {}
+			for _, e in ipairs(items) do
+				local iname = low and ItemDB.Get(e[1], "name")
+				if type(iname) == "string" and iname ~= "" and low:find(strlower(iname), 1, true) then picked[#picked + 1] = e end
+			end
+			if #picked == 0 and itemIndex and items[itemIndex] then picked[1] = items[itemIndex] end
+			if #picked > 0 then items = picked end
+		end
+		for _, e in ipairs(items) do
+			local npcs = ItemDB.Get(e[1], "npcDrops") or {}
+			for i = 1, math.min(#npcs, 200) do
+				local probe = {}
+				AddSpawns(probe, NpcDB.Get(npcs[i], "spawns"), wanted)
+				if #probe > 0 then
+					local name = NpcDB.Get(npcs[i], "name")
+					if type(name) == "string" and name ~= "" then
+						names[#names + 1] = name
+						ids[name] = npcs[i]
+						if limit and #names >= limit then return end
+					end
+				end
+			end
+		end
+	end)
+	return names, ids
 end
 
 -- Dungeons und Schlachtzuege haben in Classic keine Karte: GetBestMapForUnit liefert nil, eine Position gibt es nicht.
@@ -2443,10 +2925,26 @@ local function ComputeNear()
 	end
 
 	local pos = C_Map.GetPlayerMapPosition(mapID, "player")
-	if not pos then return list end
+	local px, py
+	if pos then px, py = pos:GetXY() end
 
-	local px, py = pos:GetXY()
-	if not (px and py) or (px == 0 and py == 0) then return list end
+	-- Keine Position (z. B. in Dalaran, wo es für diese Karte keine gibt): keine Entfernung möglich. Dann stehen die
+	-- offenen Quests des Gebiets einfach in der Liste, wie in einer Instanz ("Dungeon"); fertige bleiben draußen.
+	if not (px and py) or (px == 0 and py == 0) then
+		-- Nur Quests, die das Questlog unter dem Namen genau dieses Ortes führt (nicht die des Ersatzgebiets, z. B. Hillsbrad)
+		local here = { [NormName(GetRealZoneText()) or ""] = true, [NormName(GetZoneText()) or ""] = true }
+		for id in pairs(myIds) do
+			local header = myLogIds[id]
+			if not IsQuestHidden(id) and type(header) == "string" and here[NormName(header) or ""] then
+				local p = myProgress[id]
+				if not (p and p.ready) then
+					list[#list + 1] = { id = id, instance = true, objs = p and p.objs, goals = p and p.goals }
+				end
+			end
+		end
+		table.sort(list, function(a, b) return QuestName(a.id) < QuestName(b.id) end)
+		return list
+	end
 
 	local width, height = 4000, 3000
 	if C_Map.GetMapWorldSize then
@@ -2460,9 +2958,10 @@ local function ComputeNear()
 	local now = GetTime()
 	local hold = (cfg.nearHold or 3) * 60
 
-	for id in pairs(myIds) do
+	-- alle Quests im Log, egal unter welcher Überschrift: sie zeigt den Ort der Annahme, die Ziele liegen oft woanders
+	for id in pairs(myLogIds) do
 		if not IsQuestHidden(id) then
-			local p = myProgress[id]
+			local p = myProgress[id] or ComputeProgress({ [id] = true })[id]
 			local points, known = QuestPoints(id, wanted, mapID)
 			local best
 
@@ -2474,12 +2973,12 @@ local function ComputeNear()
 
 			-- Quest ohne richtigen Ort (QuestieDB kennt keinen): nach einem Fortschritt bleibt sie ein paar Minuten
 			-- in der Liste, egal wo man steht; danach verschwindet sie
-			local held = known == 0 and progressAt[id] and (now - progressAt[id]) < hold
+			local held = known == 0 and ST.progressAt[id] and (now - ST.progressAt[id]) < hold
 
 			if best and best <= radius and not (p and p.ready) then
-				list[#list + 1] = { id = id, dist = best }
+				list[#list + 1] = { id = id, dist = best, objs = p and p.objs, goals = p and p.goals }
 			elseif held then
-				list[#list + 1] = { id = id, dist = best, held = true, age = now - progressAt[id] }
+				list[#list + 1] = { id = id, dist = best, held = true, age = now - ST.progressAt[id], objs = p and p.objs, goals = p and p.goals }
 			end
 		end
 	end
@@ -2517,7 +3016,7 @@ local function LearnQuestPoint(id)
 end
 
 local function GetNearRow(i)
-	local row = nearRows[i]
+	local row = ST.nearRows[i]
 	if row then return row end
 
 	row = CreateFrame("Button", nil, nearUI.content)
@@ -2539,14 +3038,15 @@ local function GetNearRow(i)
 		end
 		GameTooltip:AddLine(T("Klick: im Questlog öffnen", "Click: open in quest log"), 0.6, 0.6, 0.6)
 		GameTooltip:AddLine(T("Shift-Klick: Link in den Chat", "Shift-click: link into chat"), 0.6, 0.6, 0.6)
-		GameTooltip:AddLine(T("Rechtsklick: hier ausblenden", "Right-click: hide here"), 0.6, 0.6, 0.6)
+		GameTooltip:AddLine(self.hiddenView and T("Rechtsklick: wieder einblenden", "Right-click: show again")
+			or T("Rechtsklick: hier ausblenden", "Right-click: hide here"), 0.6, 0.6, 0.6)
 		GameTooltip:Show()
 	end)
 	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	row:SetScript("OnClick", function(self, button)
 		if not self.questId then return end
 		if button == "RightButton" then
-			HideQuest(self.questId)
+			if self.hiddenView then UnhideQuest(self.questId) else HideQuest(self.questId) end
 		else
 			OpenQuest(self.questId)
 		end
@@ -2571,7 +3071,7 @@ local function GetNearRow(i)
 	row.divider:SetHeight(1)
 	row.divider:SetColorTexture(0.21, 0.19, 0.14, 1)
 	row.goals = {}
-	nearRows[i] = row
+	ST.nearRows[i] = row
 	return row
 end
 
@@ -2586,9 +3086,9 @@ local function NearMates(id, goalCount)
 
 	for _, name in ipairs(GroupNames()) do
 		local prog = progressBy[name] and progressBy[name][id]
-		local det = detailsBy[name] and detailsBy[name][id]
+		local det = MV.Details(name, id)
 
-		if completedBy[name] and completedBy[name][id] then
+		if ST.completedBy[name] and ST.completedBy[name][id] then
 			quest[#quest + 1] = { name = name, text = CHECK, state = "done", tip = T("Quest abgegeben", "Quest turned in") }
 		elseif prog and prog.ready then
 			quest[#quest + 1] = { name = name, text = CHECK, state = "done", tip = T("Alle Ziele erledigt", "All goals done") }
@@ -2643,9 +3143,20 @@ local function BuildNear()
 	return entries, table.concat(ids, ",")
 end
 
+-- Reiter "Ausgeblendet": die ausgeblendeten Quests wie im Reiter "Aktiv" (mit Zielen und Fortschritt, soweit sie im Questlog stehen)
+local function BuildHidden()
+	local entries = {}
+	for _, h in ipairs(HiddenList()) do
+		local p = myProgress[h.id]
+		if not p and myLogIds[h.id] then p = ComputeProgress({ [h.id] = true })[h.id] end
+		entries[#entries + 1] = { id = h.id, title = h.name, hidden = true, objs = p and p.objs, goals = p and p.goals }
+	end
+	return entries
+end
+
 -- /sqh near debug: zeigt, warum das Fenster erscheint oder nicht
 local function DebugNear()
-	local function say(text) print("|cffe8c26aSQH near|r " .. text) end
+	local function say(text) print("|cffe8c26a[SQH near]|r " .. text) end
 	say("Window enabled: " .. tostring(cfg.nearEnabled) .. ", range " .. cfg.nearRadius .. " yd, scanReady " .. tostring(scanReady))
 	say("QuestieDB loaded: " .. tostring(HasQuestieDB() and true or false))
 	local mapID, mapName = ZoneMap()
@@ -2657,13 +3168,13 @@ local function DebugNear()
 		local count = 0
 		for id in pairs(myLogIds) do
 			count = count + 1
-			pointsCache[id] = nil
+			ST.pointsCache[id] = nil
 			local _, known = QuestPoints(id, iw, zoneKey)
 			if known > 0 then
 				say(("%s [%d]: %d goals in this instance"):format(QuestName(id), id, known))
 			else
 				say(("%s [%d]: no goals in this instance (log header: %s)"):format(QuestName(id), id, tostring(type(myLogIds[id]) == "string" and myLogIds[id] or "?")))
-				for _, note in ipairs((pointsCache[id] and pointsCache[id].notes) or {}) do say("    " .. note) end
+				for _, note in ipairs((ST.pointsCache[id] and ST.pointsCache[id].notes) or {}) do say("    " .. note) end
 			end
 		end
 		if count == 0 then say("Quest log is empty.") end
@@ -2680,7 +3191,7 @@ local function DebugNear()
 	local count = 0
 	for id in pairs(myIds) do
 		count = count + 1
-		pointsCache[id] = nil
+		ST.pointsCache[id] = nil
 		debugAreas = {}
 		local points = QuestPoints(id, wanted, mapID)
 		local seen = debugAreas
@@ -2723,7 +3234,8 @@ function MV.NearNumber(e)
 	return "", false
 end
 
-function MV.ShowMiniList(f, entries, fresh)
+-- custom: fertige Zeilenliste statt der Zeilen aus den Quests (z. B. für "Mitspielern helfen": Mitspieler und ihre Quests)
+function MV.ShowMiniList(f, entries, fresh, custom)
 	local mini = f.mini
 	if not mini then
 		mini = CreateFrame("Frame", nil, f)
@@ -2732,8 +3244,21 @@ function MV.ShowMiniList(f, entries, fresh)
 		f.mini = mini
 	end
 	mini:Show()
+	mini:ClearAllPoints()
+	mini:SetPoint("TOPLEFT", f, "TOPLEFT", 8, -(MV.Head(f) + 4))
 
-	local list = entries
+	-- Eine Zeile je Questziel (nicht je Quest): Zielname links, Stand hinten. Quests ohne bekannte Ziele bleiben eine Zeile.
+	local list = custom or {}
+	for _, e in ipairs(custom and {} or entries) do
+		local goals = GoalList(e.id, e.objs, e.goals)
+		if #goals == 0 then
+			list[#list + 1] = e
+		else
+			for _, g in ipairs(goals) do
+				list[#list + 1] = { id = e.id, goal = true, name = g.name, count = g.count or "", done = g.done }
+			end
+		end
+	end
 	if #list == 0 then list = { { none = true } } end
 	local y = 0
 	for i, e in ipairs(list) do
@@ -2765,12 +3290,30 @@ function MV.ShowMiniList(f, entries, fresh)
 		row:SetSize(MV.MINI_W - 16, 16)
 		row.questId = e.id
 		if e.none then
-			row.name:SetText("-")
+			row.name:SetText(e.text or "-")
 			row.name:SetTextColor(0.6, 0.57, 0.5)
 			row.num:SetText("")
+		elseif e.member then
+			-- Mitspieler (Klassenfarbe), hinten die Zahl seiner Quests
+			row.name:SetText(ColoredName(e.name))
+			row.num:SetText("(" .. (e.count or 0) .. ")")
+			row.num:SetTextColor(0.61, 0.57, 0.50)
+		elseif e.help then
+			-- Quest des Mitspielers, leicht eingerückt, hinten sein Stand
+			row.name:SetText("  " .. (e.title or QuestName(e.id)))
+			row.name:SetTextColor(0.95, 0.92, 0.86)
+			local pct = e.ready and 100 or e.pct
+			row.num:SetText(pct and (pct .. "%") or "")
+			if e.ready then row.num:SetTextColor(0.30, 0.76, 0.42) else row.num:SetTextColor(0.94, 0.75, 0.29) end
 		else
-			local num, done = MV.NearNumber(e)
-			row.name:SetText(e.title or QuestName(e.id))
+			local num, done
+			if e.goal then
+				num, done = e.count, e.done
+				row.name:SetText(e.name or "")
+			else
+				num, done = MV.NearNumber(e)
+				row.name:SetText(e.title or QuestName(e.id))
+			end
 			row.name:SetTextColor(0.95, 0.92, 0.86)
 			row.num:SetText(num)
 			if done then row.num:SetTextColor(0.30, 0.76, 0.42) else row.num:SetTextColor(0.94, 0.75, 0.29) end
@@ -2835,6 +3378,9 @@ end
 function RefreshNear()
 	if not nearUI then return end
 
+	MV.SetHeader(nearUI, cfg.hideHeaderNear)
+	PruneHidden()
+	if MV.nearTab == "hidden" and HiddenCount() == 0 then MV.nearTab = "active" end   -- nichts mehr ausgeblendet: zurück zu "Aktiv"
 	local entries, sig = BuildNear()
 	nearUI.sig = sig
 	local wanted = cfg.nearEnabled and scanReady
@@ -2846,12 +3392,12 @@ function RefreshNear()
 	local now = GetTime()
 	local fresh, anyFresh = {}, false
 	for _, e in ipairs(entries) do
-		if e.id and not nearKnown[e.id] and now - (nearSeen[e.id] or -1e9) > NEAR_AGAIN then
+		if e.id and not ST.nearKnown[e.id] and now - (ST.nearSeen[e.id] or -1e9) > ST.NEAR_AGAIN then
 			fresh[e.id] = true
 			anyFresh = true
 		end
 	end
-	for _, e in ipairs(entries) do if e.id then nearSeen[e.id] = now end end
+	for _, e in ipairs(entries) do if e.id then ST.nearSeen[e.id] = now end end
 
 	local flying = (IsFlying and IsFlying()) or (UnitOnTaxi and UnitOnTaxi("player"))
 	if wanted and cfg.nearSound and not testMode and not flying and anyFresh then
@@ -2859,14 +3405,39 @@ function RefreshNear()
 	end
 	if not (wanted and cfg.nearGlow ~= false and not testMode) then wipe(fresh) end   -- Leuchten abgeschaltet
 
-	wipe(nearKnown)
-	for _, e in ipairs(entries) do if e.id then nearKnown[e.id] = true end end
+	wipe(ST.nearKnown)
+	for _, e in ipairs(entries) do if e.id then ST.nearKnown[e.id] = true end end
 
-	local auto = wanted and #entries > 0 and sig ~= nearDismissed
-	if not (nearForce or testMode or auto) then
+	local auto = wanted and #entries > 0 and sig ~= ST.nearDismissed
+	if not (ST.nearForce or testMode or auto or MV.nearTab == "hidden") then
 		nearUI:Hide()
 		return
 	end
+
+	-- Reiter "Aktiv" / "Ausgeblendet (n)": Gruppe aus zwei Knöpfen unter dem Titelband (in der kleinen Ansicht ohne Reiter)
+	local tabs = nearUI.tabs
+	local showTabs = not MV.IsMin("minNear")
+	for key, btn in pairs(tabs) do
+		btn:SetShown(showTabs)
+		local on = key == MV.nearTab
+		btn.bg:SetColorTexture(on and 0.42 or 0.15, on and 0.34 or 0.12, on and 0.15 or 0.07, 1)
+		btn.text:SetTextColor(on and 1 or 0.91, on and 0.9 or 0.76, on and 0.7 or 0.42)
+		btn:ClearAllPoints()
+	end
+	-- Ohne ausgeblendete Quests ist "Ausgeblendet" ausgegraut und nicht anklickbar
+	local noHidden = HiddenCount() == 0
+	tabs.hidden:SetEnabled(not noHidden)
+	tabs.hidden.hl:SetShown(not noHidden)
+	if noHidden then
+		tabs.hidden.bg:SetColorTexture(0.1, 0.085, 0.06, 1)
+		tabs.hidden.text:SetTextColor(0.45, 0.42, 0.36)
+	end
+	tabs.active:SetPoint("TOPLEFT", nearUI, "TOPLEFT", 10, -(MV.Head(nearUI) + 7))
+	tabs.hidden:SetPoint("LEFT", tabs.active, "RIGHT", 4, 0)
+	tabs.hidden.text:SetText(T("Ausgeblendet", "Hidden") .. (HiddenCount() > 0 and (" (" .. HiddenCount() .. ")") or ""))
+	-- Breite folgt dem Text (mit der Anzahl wird der Reiter breiter)
+	for _, btn in pairs(tabs) do btn:SetWidth(math.max(60, math.ceil(btn.text:GetStringWidth()) + 24)) end
+	local tabH = showTabs and MV.NEAR_TAB_H or 0
 
 	-- Kleine Ansicht: sehr schmal, je Quest eine Zeile mit dem Namen und hinten einer Zahl, sonst nichts
 	if MV.IsMin("minNear") then
@@ -2874,18 +3445,22 @@ function RefreshNear()
 		MV.HideSummary(nearUI)
 		local h = MV.ShowMiniList(nearUI, entries, fresh)
 		-- oben 4 px unter dem Titelband, unten 4 px plus Rand: der Text sitzt mittig
-		MV.ApplyHeight(nearUI, "nearMode", BAND_H + 4 + h + 4 + 3)
+		MV.ApplyHeight(nearUI, "nearMode", MV.Head(nearUI) + 4 + h + 4 + 3)
 		nearUI:Show()
 		return
 	end
 	if nearUI.mini then nearUI.mini:Hide() end
+	nearUI.scroll:ClearAllPoints()
+	nearUI.scroll:SetPoint("TOPLEFT", nearUI, "TOPLEFT", 0, -(MV.Head(nearUI) + tabH))
 	nearUI.scroll:Show()
 	MV.HideSummary(nearUI)
 
 	-- Zeilen liegen im Scrollbereich (Koordinaten ab dessen Oberkante)
 	local y = 8
 
-	if #entries == 0 then
+	-- Reiter "Ausgeblendet": dieselben Zeilen wie bei "Aktiv", nur mit den ausgeblendeten Quests (Rechtsklick blendet sie wieder ein)
+	local view = MV.nearTab == "hidden" and BuildHidden() or entries
+	if #view == 0 then
 		local row = GetNearRow(1)
 		row:ClearAllPoints()
 		row:SetPoint("TOPLEFT", nearUI.content, "TOPLEFT", 12, -y)
@@ -2899,15 +3474,18 @@ function RefreshNear()
 		for _, g in ipairs(row.goals) do g:Hide() end
 		LayoutChips(row, row.chips, nil, 0, 0)
 		row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -6, 0)
-		row.fs:SetText("|cff9b9180" .. (HasQuestieDB() and T("Keine Quest-Ziele in der Nähe.", "No quest goals nearby.")
+		row.hiddenView = nil
+		row.fs:SetText("|cff9b9180" .. (MV.nearTab == "hidden" and T("Keine ausgeblendeten Quests.", "No hidden quests.")
+			or HasQuestieDB() and T("Keine Quest-Ziele in der Nähe.", "No quest goals nearby.")
 			or T("Keine Ziele bekannt. Ohne QuestieDB lernt das Addon die Orte beim Spielen.", "No goals known. Without QuestieDB the addon learns the places while you play.")) .. "|r")
 		row:Show()
 		y = y + INFO_H
 
-		for i = 2, #nearRows do nearRows[i]:Hide() end
+		for i = 2, #ST.nearRows do ST.nearRows[i]:Hide() end
 	else
-		for i, e in ipairs(entries) do
+		for i, e in ipairs(view) do
 			local row = GetNearRow(i)
+			row.hiddenView = e.hidden
 			local goals = GoalList(e.id, e.objs, e.goals)
 			local allDone = (#goals > 0) or (e.id and myProgress[e.id] and myProgress[e.id].ready)
 
@@ -2918,15 +3496,19 @@ function RefreshNear()
 			row:ClearAllPoints()
 			row:SetPoint("TOPLEFT", nearUI.content, "TOPLEFT", 12, -y)
 			row:SetWidth(WIDTH - 24)
+			row.bg:SetColorTexture(0.145, 0.125, 0.10, cfg.opacity)
 			row.bg:Show()
-			row.divider:SetShown(i > 1)
-			row.accent:Show()
+			row.divider:SetShown(i > 1 and cfg.showDividers ~= false)
+			row.accent:SetShown(cfg.showAccent ~= false)
+			row.accent:SetWidth(cfg.accentW or 3)
 			if allDone then row.accent:SetColorTexture(0.30, 0.76, 0.42, 1) else row.accent:SetColorTexture(0.94, 0.75, 0.29, 1) end
 			row.questId = e.id
 			row:EnableMouse(e.id ~= nil)
 			row.fs:SetText(e.title or QuestName(e.id))
 			row.fs:SetTextColor(0.95, 0.92, 0.86)
-			if e.instance then
+			if e.hidden then
+				SetPill(row.pill, "grey", myLogIds[e.id] and T("ausgeblendet", "hidden") or T("nicht im Log", "not in log"), nil, 16)
+			elseif e.instance then
 				-- in Dungeons gibt es keine Position und damit keine Entfernung
 				SetPill(row.pill, "they", T("Dungeon", "Dungeon"), nil, 16)
 			elseif e.held and not (e.dist and e.dist <= cfg.nearRadius) then
@@ -2936,6 +3518,8 @@ function RefreshNear()
 			else
 				SetPill(row.pill, "they", math.floor(e.dist + 0.5) .. " m", nil, 16)
 			end
+			local showDist = cfg.showDist ~= false
+			if not showDist then HidePill(row.pill) end
 
 			-- Stand der Gruppenmitglieder: je Ziel unter dem Ziel, sonst eine Zeile unter dem Titel
 			local perGoal, questMates
@@ -2946,8 +3530,12 @@ function RefreshNear()
 			end
 			for j, goal in ipairs(goals) do goal.mates = perGoal[j] end
 			-- Badges zur ganzen Quest rechts im Titel, direkt vor der Entfernung; der Titel endet davor
-			local qw = LayoutChips(row, row.chips, questMates, 8 + row.pill.tex:GetWidth() + 4, 6)
-			row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -(6 + ((qw > 0) and (qw + 4) or 0)), 0)
+			local qw = LayoutChips(row, row.chips, questMates, 8 + (showDist and (row.pill.tex:GetWidth() + 4) or 0), 6)
+			if showDist then
+				row.fs:SetPoint("RIGHT", row.pill.tex, "LEFT", -(6 + ((qw > 0) and (qw + 4) or 0)), 0)
+			else
+				row.fs:SetPoint("RIGHT", row, "RIGHT", -(8 + ((qw > 0) and (qw + 4) or 0)), 0)
+			end
 			local mh = 0
 
 			local gh = RenderGoals(row, goals, NEAR_ROW_H - 2 + mh)
@@ -2958,7 +3546,7 @@ function RefreshNear()
 			y = y + h + 2
 		end
 
-		for i = #entries + 1, #nearRows do nearRows[i]:Hide() end
+		for i = #view + 1, #ST.nearRows do ST.nearRows[i]:Hide() end
 	end
 
 	-- Scrollbereich: so hoch wie die Liste, höchstens nearMaxHeight; darüber scrollt das Mausrad
@@ -2967,7 +3555,7 @@ function RefreshNear()
 	nearUI.content:SetHeight(contentH)
 	nearUI.scroll:SetHeight(viewH)
 	nearUI:UpdateScroll()
-	y = BAND_H + viewH
+	y = MV.Head(nearUI) + tabH + viewH
 
 	local newHeight = y + 10
 	local db = SexyQuestHelperDB.nearMode
@@ -3050,7 +3638,7 @@ local function CreateNearUI()
 		local range = math.max(0, contentH - viewH)
 		local offset = math.min(math.max(self.scroll:GetVerticalScroll(), 0), range)
 		self.scroll:SetVerticalScroll(offset)
-		if range <= 0 then
+		if range <= 0 or cfg.showScroll == false then
 			self.track:Hide()
 			self.thumb:Hide()
 			return
@@ -3071,39 +3659,90 @@ local function CreateNearUI()
 
 	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
 	close:SetPoint("TOPRIGHT", 2, 2)
+	f.closeBtn = close
 	close:SetScript("OnClick", function()
-		nearForce = false
-		nearDismissed = f.sig
+		ST.nearForce = false
+		MV.nearTab = "active"
+		ST.nearDismissed = f.sig
 		f:Hide()
 	end)
+
+	-- Reiter unter dem Titelband: Aktiv / Ausgeblendet (derselbe Aufbau der Zeilen, nur andere Quests)
+	-- Reiter wie in der Vorschau (Samples.lua): flache Fläche mit dünnem goldenem Rand statt des abgerundeten Knopfrands
+	local function MakeTab(label, width)
+		local b = CreateFrame("Button", nil, f)
+		b:SetSize(width, 22)
+		b.bg = b:CreateTexture(nil, "BACKGROUND")
+		b.bg:SetAllPoints()
+		b.bg:SetColorTexture(0.15, 0.12, 0.07, 1)
+		b.hl = b:CreateTexture(nil, "HIGHLIGHT")
+		b.hl:SetAllPoints()
+		b.hl:SetColorTexture(1, 1, 1, 0.12)
+		b.text = b:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
+		b.text:SetAllPoints()
+		b.text:SetText(label)
+		b.text:SetTextColor(0.91, 0.76, 0.42)
+		b:RegisterForClicks("LeftButtonUp")
+		for _, e in ipairs({ { "TOPLEFT", "TOPRIGHT", true }, { "BOTTOMLEFT", "BOTTOMRIGHT", true },
+			{ "TOPLEFT", "BOTTOMLEFT", false }, { "TOPRIGHT", "BOTTOMRIGHT", false } }) do
+			local t = b:CreateTexture(nil, "BORDER")
+			t:SetColorTexture(0.42, 0.34, 0.15, 1)
+			t:SetPoint(e[1])
+			t:SetPoint(e[2])
+			if e[3] then t:SetHeight(1) else t:SetWidth(1) end
+		end
+		return b
+	end
+	f.tabs = {
+		active = MakeTab(T("Aktiv", "Active"), 80),
+		hidden = MakeTab(T("Ausgeblendet", "Hidden"), 130),
+	}
+	for key, btn in pairs(f.tabs) do
+		btn:SetScript("OnClick", function()
+			MV.nearTab = key
+			RefreshNear()
+		end)
+	end
 
 	MV.AddMinButton(f, "minNear", function() RefreshNear() end)
 
 	f:Hide()
 	SEM:Register(f, {
 		name = "SexyQuestHelper: " .. T("Quests in der Nähe", "Quests nearby"),
+		category = T("Quests", "Quests"),   -- Zwischenüberschrift in der Seitenleiste des Einstellungsfensters
 		addon = "SexyQuestHelper",
 		group = "sqh", groupName = "SexyQuestHelper",   -- Tabs im Edit-Mode-Dialog
 		description = T("Deine offenen Quests, deren Ziele in Reichweite liegen, mit den Einzelzielen.", "Your open quests whose goals are in range, with the single goals."),
+		sample = SexyQuestHelperSamples and SexyQuestHelperSamples.near,   -- Vorschau im Einstellungsfenster: eigenes Fenster mit eigener Logik (Samples.lua)
 		db = db,
 		settings = {
-			{ type = "link", name = "SexyQuestHelper", frame = function() return ui end },
-			{ type = "header", name = T("Quests in der Nähe", "Quests nearby"), id = "near" },
+			{ type = "header", name = T("Darstellung", "Look"), id = "look" },
+			{ type = "check", name = T("Kopfzeile ausblenden", "Hide header"),
+				get = function() return cfg.hideHeaderNear end,
+				set = function(v) cfg.hideHeaderNear = v and true or false; RefreshNear() end },
+			{ type = "slider", name = T("Größte Höhe der Liste (darüber scrollen)", "Largest list height (scroll beyond)"), min = 150, max = 900, step = 25,
+				get = function() return cfg.nearMaxHeight end,
+				set = function(v) cfg.nearMaxHeight = v; RefreshNear() end,
+				format = function(v) return v .. " px" end },
+			{ type = "check", name = T("Stand der Gruppenmitglieder zeigen", "Show the progress of group members"),
+				get = function() return cfg.nearMates end,
+				set = function(v) cfg.nearMates = v and true or false; RefreshNear() end },
+			MV.Spec("width"), MV.Spec("rowH"), MV.Spec("opacity"), MV.Spec("showBars"), MV.Spec("barH"),
+			MV.Spec("fontDelta"), MV.Spec("bandH"), MV.Spec("bgColor"), MV.Spec("borderColor"), MV.Spec("showAccent"), MV.Spec("accentW"),
+			MV.Spec("showDividers"), MV.Spec("showDist"), MV.Spec("showChecks"), MV.Spec("showCounts"), MV.Spec("showButtons"), MV.Spec("showScroll"),
+			MV.Spec("glowColor"), MV.Spec("glowAlpha"),
+			{ type = "header", name = T("Verhalten", "Behavior"), id = "near" },
 			MV.CombatSpec("minNear"),
 			{ type = "check", behavior = true, name = T("Fenster einschalten (öffnet sich in Zielnähe)", "Turn the window on (opens near goals)"),
 				get = function() return cfg.nearEnabled end,
 				set = function(v) cfg.nearEnabled = v and true or false; RefreshNear() end },
-			{ type = "slider", behavior = true, name = T("Reichweite", "Range"), min = 20, max = 200, step = 10,
+			{ type = "slider", behavior = true, name = T("Reichweite", "Range"), min = 20, max = 300, step = 10,
 				get = function() return cfg.nearRadius end,
 				set = function(v) cfg.nearRadius = v; RefreshNear() end,
 				format = function(v) return v .. " m" end },
 			{ type = "slider", behavior = true, name = T("Quest ohne festen Ort bleibt (Minuten)", "Quest without a fixed place stays (minutes)"), min = 1, max = 10, step = 1,
 				get = function() return cfg.nearHold end,
 				set = function(v) cfg.nearHold = v; RefreshNear() end },
-			{ type = "slider", name = T("Größte Höhe der Liste (darüber scrollen)", "Largest list height (scroll beyond)"), min = 150, max = 900, step = 25,
-				get = function() return cfg.nearMaxHeight end,
-				set = function(v) cfg.nearMaxHeight = v; RefreshNear() end,
-				format = function(v) return v .. " px" end },
 			{ type = "check", behavior = true, name = T("Kurz aufleuchten, wenn eine Quest neu in Reichweite kommt", "Brief glow when a quest comes into range"),
 				get = function() return cfg.nearGlow ~= false end,
 				set = function(v) cfg.nearGlow = v and true or false end },
@@ -3122,9 +3761,7 @@ local function CreateNearUI()
 				},
 				get = function() return cfg.nearSoundChannel end,
 				set = function(v) cfg.nearSoundChannel = v; pcall(NearSound.Play) end },
-			{ type = "check", name = T("Stand der Gruppenmitglieder zeigen", "Show the progress of group members"),
-				get = function() return cfg.nearMates end,
-				set = function(v) cfg.nearMates = v and true or false; RefreshNear() end },
+			{ type = "link", name = "SexyQuestHelper", frame = function() return ui end },
 		},
 		onMoved = function(self) db.anchoredHeight = self:GetHeight() end,
 	})
@@ -3147,7 +3784,7 @@ local function DoScan(forceBroadcast)
 	scanTimer = nil
 	local ok, zone, ids, titles, key = pcall(ScanQuests)
 	if not ok then
-		print("|cffff4040SexyQuestHelper:|r Scan-Fehler: " .. tostring(zone))
+		print("|cffff4040[SQH]|r Scan-Fehler: " .. tostring(zone))
 		return
 	end
 	myZone, myIds, myTitles, myZoneKey = zone, ids, titles, key
@@ -3157,12 +3794,12 @@ local function DoScan(forceBroadcast)
 	for id, p in pairs(myProgress) do
 		local o = previous[id]
 		if o and p.pct > o.pct then
-			progressAt[id] = GetTime()
+			ST.progressAt[id] = GetTime()
 			pcall(LearnQuestPoint, id)
 		end
 	end
-	wipe(pointsCache)
-	ignoreUntil = GetTime() + IGNORE_AFTER_SCAN
+	wipe(ST.pointsCache)
+	ignoreUntil = GetTime() + ST.IGNORE_AFTER_SCAN
 
 	local signature = myZoneKey .. ":" .. table.concat(SortedIds(myIds), ",")
 	if forceBroadcast or signature ~= mySignature then
@@ -3180,14 +3817,14 @@ end
 local function QueueScan(forceBroadcast)
 	if scanTimer and not forceBroadcast then return end
 	scanTimer = true
-	C_Timer.After(SCAN_DELAY, function() DoScan(forceBroadcast) end)
+	C_Timer.After(ST.SCAN_DELAY, function() DoScan(forceBroadcast) end)
 end
 
 local function PruneMembers()
 	local present = {}
 	for _, name in ipairs(GroupNames()) do present[name] = true end
 	for name in pairs(members) do
-		if not present[name] then members[name] = nil; versions[name] = nil; completedBy[name] = nil; blockedBy[name] = nil; learnedBlocked[name] = nil; progressBy[name] = nil; detailsBy[name] = nil end
+		if not present[name] then members[name] = nil; ST.versions[name] = nil; ST.completedBy[name] = nil; ST.blockedBy[name] = nil; ST.learnedBlocked[name] = nil; progressBy[name] = nil; detailsBy[name] = nil end
 	end
 end
 
@@ -3216,6 +3853,13 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		-- echte Aenderungen: immer scannen (QUEST_LOG_UPDATE wird nach einem Scan kurz
 		-- ignoriert und koennte sonst eine gleich danach angenommene Quest verschlucken)
 		QueueScan(false)
+		-- Quest abgegeben: den anderen sofort melden (Typ "E" haengt an). Sonst erfahren sie es erst bei der naechsten Liste, die sie
+		-- schicken, und zeigen "Hat nicht" samt Teilen-Knopf, obwohl die Quest laengst abgegeben ist.
+		if event == "QUEST_TURNED_IN" then
+			local qid = ...
+			local channel = GroupChannel()
+			if qid and channel then SendIdList("E", "E", { qid }, channel) end
+		end
 	elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
 		-- Kampf beginnt/endet: Teilen-Knöpfe sofort ein- bzw. ausschalten
 		for _, row in ipairs(rowPool) do UpdateShareButton(row.share) end
@@ -3232,13 +3876,16 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		SexyQuestHelperDB = SexyQuestHelperDB or {}
 		SexyQuestHelperDB.cfg = SexyQuestHelperDB.cfg or {}
 		cfg = setmetatable(SexyQuestHelperDB.cfg, { __index = DEFAULTS })
+		MV.ApplySizes()
 		ui = CreateUI() -- zuerst, damit /sqh auch bei spaeteren Fehlern funktioniert
 		helpUI = CreateHelpUI()
 		nearUI = CreateNearUI()
+		MV.ApplySizes()   -- jetzt gibt es die Fenster: Titelleiste, Farben und Schrift nach den Einstellungen
 		-- Ausgeblendete Quests: eigene Seite im gemeinsamen Einstellungsfenster (kein Fenster, kein Edit Mode)
 		if SEM.RegisterPage then
 			SEM:RegisterPage({
 				name = "SexyQuestHelper: " .. T("Ausgeblendete Quests", "Hidden quests"),
+				category = T("Verwaltung", "Manage"),   -- Zwischenüberschrift in der Seitenleiste des Einstellungsfensters
 				addon = "SexyQuestHelper",
 		group = "sqh", groupName = "SexyQuestHelper",   -- Tabs im Edit-Mode-Dialog
 				description = T("Quests, die du im Fenster \"Quests in der Nähe\" per Rechtsklick ausgeblendet hast.", "Quests you hid with a right-click in the \"Quests nearby\" window."),
@@ -3247,7 +3894,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		end
 		-- Position ändert sich laufend: regelmäßig prüfen (nur, wenn das Fenster an ist oder offen steht)
 		C_Timer.NewTicker(1.5, function()
-			if cfg.nearEnabled or nearForce or testMode or (nearUI and nearUI:IsShown()) then RefreshNear() end
+			if cfg.nearEnabled or ST.nearForce or testMode or (nearUI and nearUI:IsShown()) then RefreshNear() end
 		end)
 		local register = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or RegisterAddonMessagePrefix
 		local regOk, regResult = pcall(register, PREFIX)
@@ -3300,7 +3947,7 @@ function SetTestMode(on)
 		end
 		ids[999999] = true
 		members.Testmate = { zone = myZoneKey, ids = ids }
-		versions.Testmate = VERSION
+		ST.versions.Testmate = VERSION
 	else
 		members.Testmate = nil
 	end
@@ -3312,7 +3959,7 @@ SLASH_SEXYQUESTHELPER1 = "/sqh"
 SLASH_SEXYQUESTHELPER2 = "/sexyquesthelper"
 SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 	if not ui then
-		print("SexyQuestHelper: Oberflaeche nicht initialisiert (Fehler beim Laden?)")
+		print("|cffe8c26a[SQH]|r Oberflaeche nicht initialisiert (Fehler beim Laden?)")
 		return
 	end
 	arg = (arg or ""):lower()
@@ -3327,13 +3974,13 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 	end
 	if arg == "debug" or arg == "debug log" then
 		local keys = {}
-		for name, m in pairs(members) do keys[#keys + 1] = ("%s(%d, v%s)"):format(name, #SortedIds(m.ids), tostring(versions[name] or "?")) end
-		print(("SQH v%s | Kanal=%s | Prefix=%s | gesendet=%d (%s) | empfangen=%d | Addon-Msgs gesamt=%d | letzter Sender=%s"):format(
+		for name, m in pairs(members) do keys[#keys + 1] = ("%s(%d, v%s)"):format(name, #SortedIds(m.ids), tostring(ST.versions[name] or "?")) end
+		print(("|cffe8c26a[SQH]|r v%s | Kanal=%s | Prefix=%s | gesendet=%d (%s) | empfangen=%d | Addon-Msgs gesamt=%d | letzter Sender=%s"):format(
 			VERSION, tostring(GroupChannel()),
 			tostring(prefixOk), sendCount, tostring(lastSendResult), recvCount, anyAddonMsgs, lastRecv))
-		print(("SQH Zone='%s' (%s) | Quests=%d | Log-Eintraege=%d | GetInfo=%s | GetQuestLogTitle=%s"):format(
+		print(("|cffe8c26a[SQH]|r Zone='%s' (%s) | Quests=%d | Log-Eintraege=%d | GetInfo=%s | GetQuestLogTitle=%s"):format(
 			myZone, myZoneKey, #SortedIds(myIds), NumEntries(), tostring(C_QuestLog and C_QuestLog.GetInfo ~= nil), tostring(GetQuestLogTitle ~= nil)))
-		print("SQH Gruppe: " .. table.concat(GroupNames(), ", ") .. " | Daten von: " .. table.concat(keys, ", "))
+		print("|cffe8c26a[SQH]|r Gruppe: " .. table.concat(GroupNames(), ", ") .. " | Daten von: " .. table.concat(keys, ", "))
 		if arg == "debug log" then
 			for i = 1, NumEntries() do
 				local title, isHeader, _, questID = GetEntry(i)
@@ -3346,13 +3993,13 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 		local names = GroupNames()
 		local newest = VERSION
 		for _, name in ipairs(names) do
-			if versions[name] and CompareVersions(versions[name], newest) > 0 then newest = versions[name] end
+			if ST.versions[name] and CompareVersions(ST.versions[name], newest) > 0 then newest = ST.versions[name] end
 		end
 		print(("SexyQuestHelper v%s %s"):format(VERSION,
 			CompareVersions(VERSION, newest) < 0 and ("|cffff4040(" .. T("veraltet, neueste in der Gruppe: v", "outdated, newest in group: v") .. newest .. ")|r")
 			or ("|cff00ff00(" .. T("aktuell", "up to date") .. ")|r")))
 		for _, name in ipairs(names) do
-			local v = versions[name]
+			local v = ST.versions[name]
 			local status
 			if not members[name] and not v then
 				status = "|cff888888" .. T("kein Addon / keine Daten", "no addon / no data") .. "|r"
@@ -3371,7 +4018,7 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 	if checkId then
 		local id = tonumber(checkId)
 		local function list(v) return type(v) == "table" and table.concat(v, ",") or tostring(v) end
-		print(("SQH check %d: QuestDB=%s | annehmbar=%s | erledigt=%s | aktiv=%s"):format(id,
+		print(("|cffe8c26a[SQH]|r check %d: QuestDB=%s | annehmbar=%s | erledigt=%s | aktiv=%s"):format(id,
 			tostring(_G.QuestDB ~= nil), tostring(CanAccept(id)), tostring(IsDone(id)), tostring(IsActive(id))))
 		if _G.QuestDB then
 			print(("  preQuestSingle=%s preQuestGroup=%s exclusiveTo=%s nextQuestInChain=%s requiredLevel=%s"):format(
@@ -3387,9 +4034,9 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 	if arg == "hidden" or arg == "ausgeblendet" or arg == "near hidden" or arg == "near ausgeblendet" then
 		local list = HiddenList()
 		if #list == 0 then
-			print("|cffe8c26aSexyQuestHelper|r " .. T("Keine Quests ausgeblendet.", "No hidden quests."))
+			print("|cffe8c26a[SQH]|r " .. T("Keine Quests ausgeblendet.", "No hidden quests."))
 		else
-			print("|cffe8c26aSexyQuestHelper|r " .. T("Ausgeblendete Quests:", "Hidden quests:"))
+			print("|cffe8c26a[SQH]|r " .. T("Ausgeblendete Quests:", "Hidden quests:"))
 			for _, h in ipairs(list) do print(("  [%d] %s"):format(h.id, h.name)) end
 			print("  " .. T("Einblenden: /sqh show <ID> oder /sqh show all", "Show again: /sqh show <ID> or /sqh show all"))
 		end
@@ -3400,24 +4047,24 @@ SlashCmdList["SEXYQUESTHELPER"] = function(arg)
 		local id = tonumber(showId)
 		if showId == "all" or showId == "alle" then
 			UnhideQuest(nil)
-			print("|cffe8c26aSexyQuestHelper|r " .. T("Alle Quests wieder eingeblendet.", "All quests shown again."))
+			print("|cffe8c26a[SQH]|r " .. T("Alle Quests wieder eingeblendet.", "All quests shown again."))
 		elseif id and IsQuestHidden(id) then
 			UnhideQuest(id)
-			print("|cffe8c26aSexyQuestHelper|r " .. T("wieder eingeblendet: ", "shown again: ") .. QuestName(id))
+			print("|cffe8c26a[SQH]|r " .. T("wieder eingeblendet: ", "shown again: ") .. QuestName(id))
 		else
-			print("|cffe8c26aSexyQuestHelper|r " .. T("Diese Quest ist nicht ausgeblendet.", "This quest is not hidden."))
+			print("|cffe8c26a[SQH]|r " .. T("Diese Quest ist nicht ausgeblendet.", "This quest is not hidden."))
 		end
 		return
 	end
 	if arg == "near" or arg == "nähe" then
-		nearForce = not (nearUI and nearUI:IsShown())
-		if not nearForce then nearDismissed = nearUI and nearUI.sig end
+		ST.nearForce = not (nearUI and nearUI:IsShown())
+		if not ST.nearForce then ST.nearDismissed = nearUI and nearUI.sig end
 		RefreshNear()
 		return
 	end
 	if arg == "help" or arg == "helfen" then
-		helpForce = not (helpUI and helpUI:IsShown())
-		if not helpForce then helpDismissed = helpUI and helpUI.sig end
+		ST.helpForce = not (helpUI and helpUI:IsShown())
+		if not ST.helpForce then ST.helpDismissed = helpUI and helpUI.sig end
 		RefreshHelp()
 		return
 	end

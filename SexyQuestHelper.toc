@@ -1,15 +1,15 @@
 ## Interface: 120100, 16001
 ## Version: 1.0.31
-## Title: SexyQuestHelper
+## Title: |cffb48cffSexy|r|cffbb96ffQ|cffc2a1ffu|cffc8abffe|cffcfb6ffs|cffd6c0fft|cffddcbffH|cffe4d5ffe|cffebe0ffl|cfff1eaffp|cfff8f5ffe|cffffffffr|r
 ## Author: apnotix
 ## Notes: Shows whether all group members running this addon have the same quests in the current zone
 ## Notes-deDE: Zeigt an, ob alle Gruppenmitglieder mit diesem Addon die gleichen Quests im aktuellen Gebiet haben
-## Category: Quests
 ## X-Curse-Project-ID: 1791780
 ## IconTexture: Interface\AddOns\SexyQuestHelper\icon.tga
 ## DefaultState: Enabled
 ## OptionalDeps: QuestieDB
 ## Dependencies: SexyEditMode
+## Group: SexyEditMode
 ## SavedVariables: SexyQuestHelperDB
 
 lib\LibStub\LibStub.lua
@@ -17,7 +17,10 @@ lib\CallbackHandler-1.0\CallbackHandler-1.0.lua
 lib\LibDataBroker-1.1\LibDataBroker-1.1.lua
 lib\LibDBIcon-1.0\LibDBIcon-1.0.lua
 lib\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
-lib\SexyEditMode\SexyEditMode.lua
 
 SexyQuestHelper.lua
+QuestNotes.lua
+QuestTargets.lua
 Minimap.lua
+News.lua
+Samples.lua
