@@ -923,31 +923,6 @@ local function ShareQuest(id)
 	end
 end
 
--- Automatisch teilen (Einstellung cfg.autoShare): Quests, die ein Mitglied im selben Gebiet nicht hat, wie in der Liste "Hat nicht".
--- Geteilt wird nie im Kampf, höchstens eine Quest je Durchlauf (alle 4 Sekunden) und dieselbe Quest frühestens nach 10 Minuten wieder,
--- damit bei den Mitspielern nicht dauernd Fenster aufgehen. Verworfene oder unmögliche Quests (blockedBy, learnedBlocked) bleiben draußen.
-function ST.AutoShareTick()
-	if not (cfg and cfg.autoShare) or testMode or InCombat() or not GroupChannel() then return end
-	local now = GetTime()
-	ST.autoShared = ST.autoShared or {}
-	for _, name in ipairs(GroupNames()) do
-		local m = members[name]
-		if m and m.zone == myZoneKey then
-			local theirDone = ST.completedBy[name]
-			for id in pairs(myIds) do
-				if not m.ids[id] and not (theirDone and theirDone[id]) and not IsQuestHidden(id)
-					and not (ST.blockedBy[name] and ST.blockedBy[name][id])
-					and not (ST.learnedBlocked[name] and ST.learnedBlocked[name][id])
-					and CanShare(id) and now - (ST.autoShared[id] or -1e9) > 600 then   -- Sekunden bis dieselbe Quest wieder geteilt wird
-					ST.autoShared[id] = now
-					ShareQuest(id)
-					return
-				end
-			end
-		end
-	end
-end
-C_Timer.NewTicker(4, function() ST.AutoShareTick() end)
 
 -- Fehlermeldungen beim Teilen ("X is not eligible for that quest" usw.) merken wir
 -- uns: die Quest ist fuer dieses Mitglied nicht annehmbar, der Button und der
@@ -1030,6 +1005,32 @@ local function GroupNames()
 	if testMode then names[#names + 1] = "Testmate" end
 	return names
 end
+
+-- Automatisch teilen (Einstellung cfg.autoShare): Quests, die ein Mitglied im selben Gebiet nicht hat, wie in der Liste "Hat nicht".
+-- Geteilt wird nie im Kampf, höchstens eine Quest je Durchlauf (alle 4 Sekunden) und dieselbe Quest frühestens nach 10 Minuten wieder,
+-- damit bei den Mitspielern nicht dauernd Fenster aufgehen. Verworfene oder unmögliche Quests (blockedBy, learnedBlocked) bleiben draußen.
+function ST.AutoShareTick()
+	if not (cfg and cfg.autoShare) or testMode or InCombat() or not GroupChannel() then return end
+	local now = GetTime()
+	ST.autoShared = ST.autoShared or {}
+	for _, name in ipairs(GroupNames()) do
+		local m = members[name]
+		if m and m.zone == myZoneKey then
+			local theirDone = ST.completedBy[name]
+			for id in pairs(myIds) do
+				if not m.ids[id] and not (theirDone and theirDone[id]) and not IsQuestHidden(id)
+					and not (ST.blockedBy[name] and ST.blockedBy[name][id])
+					and not (ST.learnedBlocked[name] and ST.learnedBlocked[name][id])
+					and CanShare(id) and now - (ST.autoShared[id] or -1e9) > 600 then   -- Sekunden bis dieselbe Quest wieder geteilt wird
+					ST.autoShared[id] = now
+					ShareQuest(id)
+					return
+				end
+			end
+		end
+	end
+end
+C_Timer.NewTicker(4, function() ST.AutoShareTick() end)
 
 -- Klassenfarbe eines Mitglieds (weiss, wenn die Klasse unbekannt ist)
 local function ClassFile(name)
