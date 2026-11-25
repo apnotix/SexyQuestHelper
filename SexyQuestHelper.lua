@@ -7,7 +7,7 @@
 
 local ST = {}   -- gemeinsamer Zustand statt vieler einzelner lokaler Variablen (Lua erlaubt höchstens 200 pro Funktion)
 local PREFIX = "SexyQuestHelper"
-local VERSION = "1.0.31" -- wird vom Release-Workflow zusammen mit ## Version in der .toc angehoben (GetAddOnMetadata fehlt auf Forever)
+local VERSION = "1.0.32" -- wird vom Release-Workflow zusammen mit ## Version in der .toc angehoben (GetAddOnMetadata fehlt auf Forever)
 ST.versions = {} -- [name] = Addon-Version des Mitglieds
 ST.blockedBy = {}      -- [name] = { [questID] = true }: Quests aus MEINER Liste, die das Mitglied laut seiner Meldung nicht annehmen kann
 ST.learnedBlocked = {} -- wie blockedBy, aber aus Fehlermeldungen beim Teilen gelernt

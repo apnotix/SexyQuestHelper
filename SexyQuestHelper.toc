@@ -1,5 +1,5 @@
 ## Interface: 120100, 16001
-## Version: 1.0.31
+## Version: 1.0.32
 ## Title: |cffb48cffSexy|r|cffbb96ffQ|cffc2a1ffu|cffc8abffe|cffcfb6ffs|cffd6c0fft|cffddcbffH|cffe4d5ffe|cffebe0ffl|cfff1eaffp|cfff8f5ffe|cffffffffr|r
 ## Author: apnotix
 ## Notes: Shows whether all group members running this addon have the same quests in the current zone
