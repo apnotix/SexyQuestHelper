@@ -5,6 +5,14 @@ if not (SEM and SEM.RegisterNews) then return end
 
 SEM:RegisterNews("SexyQuestHelper", {
 	color = { 0.42, 0.71, 1 },
+	{ v = "1.0.33",
+		{ "Quest-Aktionen: Ping", "Neue Option „Anvisiertes Monster anpingen“ (an): Klick auf ein Symbol oder ein Hotkey schickt zusätzlich Blizzards Ping auf den Mob, damit die Gruppe sieht, wo er steht. Im Schlachtzug nur als Leiter oder Assistent.",
+		  "Quest actions: ping", "New option \"Ping the targeted mob\" (on): clicking an icon or using a hotkey also sends the game's ping to the mob so the group sees where it is. In a raid only for the leader and assistants." },
+		{ "Quest-Aktionen: Tasten", "Bis zu 5 Tasten in den Einstellungen („Hotkeys“): Taste n visiert den nächsten freien Mob der n-ten Quest im Fenster an, jeder weitere Druck den nächsten. Von anderen getaggte Mobs werden übersprungen und lassen das Symbol grau. Nur außerhalb des Kampfs.",
+		  "Quest actions: keys", "Up to 5 keys in the settings (\"Hotkeys\"): key n targets the next free mob of the nth quest in the window, every further press the next one. Mobs tagged by others are skipped and keep the icon gray. Out of combat only." },
+		{ "Chat-Meldungen", "Ohne Gruppe (bzw. Gilde) meldet SQH nichts mehr: Fortschritt und Abgaben erscheinen nicht mehr im eigenen Chatfenster.",
+		  "Chat messages", "Without a group (or guild) SQH reports nothing any more: progress and turn-ins no longer show up in your own chat window." },
+	},
 	{ v = "1.0.30",
 		{ "Quests in der Nähe", "Zwei Reiter unter dem Titel: „Aktiv“ und „Ausgeblendet“. Der zweite zeigt ausgeblendete Quests wie die normalen Zeilen; Rechtsklick blendet sie wieder ein. Quests, die nicht mehr im Questlog stehen, verschwinden aus der Liste.",
 		  "Quests nearby", "Two tabs under the title: \"Active\" and \"Hidden\". The second shows hidden quests as normal rows; right-click shows them again. Quests that are no longer in the quest log drop out of the list." },

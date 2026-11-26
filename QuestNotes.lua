@@ -33,7 +33,7 @@ local function ProgressMode()
 	return "all"
 end
 
--- Ziel der Meldung. Ohne Gruppe bzw. Gilde fällt sie ins eigene Chatfenster zurück.
+-- Ziel der Meldung. Ohne Gruppe bzw. Gilde wird nichts gemeldet.
 -- (SAY geht bewusst nicht: Blizzard erlaubt es nur aus einer Tasteneingabe heraus, nicht aus einem Ereignis.)
 local function Send(text)
 	local channel = Get("channel")
@@ -44,9 +44,8 @@ local function Send(text)
 	elseif channel == "GUILD" and IsInGuild() then
 		local ok, err = pcall(SendChatMessage, "[SQH] " .. text, "GUILD")
 		if not ok then DEFAULT_CHAT_FRAME:AddMessage("|cffe8c26a[SQH]|r " .. text) end
-	else
-		DEFAULT_CHAT_FRAME:AddMessage("|cffe8c26a[SQH]|r " .. text)
 	end
+	-- ohne Gruppe bzw. Gilde gibt es niemanden zu informieren: keine Meldung im eigenen Chat
 end
 
 local function QuestLink(id)

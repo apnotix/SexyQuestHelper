@@ -103,7 +103,7 @@ end
 local function Gather(debug)
 	local out, seen = {}, {}
 	local zoneOnly = Get("zoneOnly", true)
-	local group = Get("groupByQuest", false)
+	local group = Get("groupByQuest", true)
 	local zones = { strlower(GetZoneText() or ""), strlower(GetRealZoneText and GetRealZoneText() or "") }
 	-- Gebiete, die im Questlog unter einem anderen Namen stehen (Alteracgebirge = Vorgebirge von Hillsbrad)
 	local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
@@ -363,9 +363,21 @@ local function UpdateNear()
 end
 
 local nearDebug = {}
+
+-- Von anderen getaggt (graue Namensschild-Leiste). Fehlt die Funktion oder liefert sie einen geheimen Wert, gilt der Mob als frei:
+-- ein Fehler hier würde sonst die ganze Prüfung des Mobs abbrechen (und ihn grau lassen).
+local function Tapped(unit)
+	if not UnitIsTapDenied then return false end
+	local ok, v = pcall(UnitIsTapDenied, unit)
+	if not ok then nearDebug.tapErr = tostring(v) return false end
+	v = Public(v)
+	if v == true then nearDebug.tapped = (nearDebug.tapped or 0) + 1 end
+	return v == true
+end
 local function ScanNear()
 	local seen = {}
 	local plates, secret, units = 0, 0, {}
+	nearDebug.tapped = 0
 	if C_NamePlate and C_NamePlate.GetNamePlates then
 		for _, plate in ipairs(C_NamePlate.GetNamePlates() or {}) do
 			plates = plates + 1
@@ -376,7 +388,8 @@ local function ScanNear()
 	units[#units + 1] = "mouseover"
 	for _, unit in ipairs(units) do
 		pcall(function()
-			if UnitExists(unit) and UnitCanAttack("player", unit) and not UnitIsPlayer(unit) and not UnitIsDead(unit) then
+			if UnitExists(unit) and UnitCanAttack("player", unit) and not UnitIsPlayer(unit) and not UnitIsDead(unit)
+				and not Tapped(unit) then   -- von anderen getaggte Mobs zählen nicht
 				local name = Public(UnitName(unit))
 				if type(name) == "string" then seen[name] = true else secret = secret + 1 end
 			end
@@ -420,6 +433,16 @@ end
 local NL = string.char(10)
 -- aliveOnly: ist das gefundene Ziel tot ([dead] prüft das aktuelle Ziel), nochmal anvisieren (Wiederholen springt zum nächsten
 -- Monster gleichen Namens); bleibt am Ende nur ein Toter, wird die Auswahl aufgehoben. Markiert wird nur, wenn ein Ziel da ist.
+-- Ping von Blizzard auf den anvisierten Mob (Option "pingMark"): der Befehl des Clients (SLASH_PING1, je Sprache anders) mit
+-- [@target]. Ohne Ziel sendet der Client nichts. Im Schlachtzug nur als Leiter oder Assistent. nil, wenn der Client den Befehl nicht kennt.
+local function PingLine()
+	if not Get("pingMark", true) then return nil end
+	local cmd = SLASH_PING1
+	if type(cmd) ~= "string" or not cmd:find("^/[^%s%c]+$") then return nil end
+	if IsInRaid() and not (UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")) then return nil end
+	return cmd .. " [@target,nodead]"
+end
+
 local function MacroFor(name, mark, aliveOnly)
 	local m
 	if aliveOnly then
@@ -428,6 +451,8 @@ local function MacroFor(name, mark, aliveOnly)
 	else
 		m = "/targetexact " .. name .. NL .. "/target " .. name
 	end
+	local ping = PingLine()
+	if ping then m = m .. NL .. ping end
 	if mark then m = m .. NL .. (aliveOnly and "/tm [exists] 8" or "/tm 8") end
 	return m
 end
@@ -443,6 +468,121 @@ local function ChatMacro(g)
 	if IsInRaid() then return "/raid " .. text end
 	if IsInGroup() then return ((IsInGroup(LE_PARTY_CATEGORY_INSTANCE or 2) and "/i ") or "/p ") .. text end
 	return ""
+end
+
+-- Tasten: bis zu 5 Belegungen, die n-te Taste visiert den nächsten freien Mob der n-ten Quest im Fenster an. Jede Taste hängt (per
+-- Override-Bindung) an einem gesicherten Knopf, der vor dem Klick (PreClick, nur außerhalb des Kampfs) ein Symbol der Quest wählt und
+-- anklickt. Weitere Drücke gehen zum jeweils nächsten Symbol.
+local HK = { quests = {}, MAX = 5, MODS = { LSHIFT = 1, RSHIFT = 1, LCTRL = 1, RCTRL = 1, LALT = 1, RALT = 1, LMETA = 1, RMETA = 1 } }
+
+function HK.Keys()
+	local c = Cfg()
+	c.hotkeys = c.hotkeys or {}
+	return c.hotkeys
+end
+
+-- "CTRL-F1" wird zu "Strg + F1" (Namen der Spieltasten, in der Sprache des Clients)
+function HK.Pretty(hk)
+	if not hk then return nil end
+	local mods, rest = "", hk
+	for _, m in ipairs({ { "ALT-", ALT_KEY_TEXT or "Alt" }, { "CTRL-", CTRL_KEY_TEXT or "Ctrl" }, { "SHIFT-", SHIFT_KEY_TEXT or "Shift" } }) do
+		if rest:sub(1, #m[1]) == m[1] then mods = mods .. m[2] .. " + "; rest = rest:sub(#m[1] + 1) end
+	end
+	return mods .. (_G["KEY_" .. rest] or rest)
+end
+
+local hotOwner = CreateFrame("Frame")   -- Besitzer der Override-Bindungen
+function HK.Bind()
+	if InCombatLockdown() then HK.pendingBind = true return end
+	HK.pendingBind = nil
+	ClearOverrideBindings(hotOwner)
+	for i = 1, HK.MAX do
+		local key = HK.Keys()[i]
+		if key then SetOverrideBindingClick(hotOwner, false, key, "SexyQuestHelperHot" .. i, "LeftButton") end
+	end
+end
+
+-- Symbol der Quest auf Platz i, das der Hotkey anklickt: genau die Symbole, die das Fenster zeigt (eingeklappte und graue, also
+-- ohne freien Mob in der Nähe, fallen weg). Ist das aktuelle Ziel eins davon, kommt das nächste, nach dem letzten das erste.
+-- Der Klick läuft über den Knopf des Symbols selbst: dasselbe Makro (anvisieren, Ping, Totenkopf) wie bei einem Mausklick.
+function HK.Pick(i)
+	local q = HK.quests[i]
+	if not q then return nil end
+	local list = {}
+	for _, row in ipairs(rows) do
+		if row:IsShown() and row.questId == q.id and not row.itemID and not row.dim then list[#list + 1] = row end
+	end
+	if #list == 0 then return nil end
+	local okT, target = pcall(function() return UnitExists("target") and Public(UnitName("target")) or nil end)
+	if okT and target then
+		for k, row in ipairs(list) do
+			if row.mob == target then return list[k % #list + 1] end
+		end
+	end
+	return list[1]
+end
+
+for i = 1, HK.MAX do
+	local b = CreateFrame("Button", "SexyQuestHelperHot" .. i, UIParent, "SecureActionButtonTemplate")
+	b:RegisterForClicks("AnyUp")
+	b:SetAttribute("useOnKeyDown", false)
+	b:SetAttribute("type", "macro")
+	b:SetAttribute("macrotext", "")
+	b:SetScript("PreClick", function(self, _, down)
+		if down or InCombatLockdown() then return end   -- im Kampf bleibt das zuletzt gesetzte Ziel
+		local row = HK.Pick(i)
+		if row then
+			self:SetAttribute("type", "click")
+			self:SetAttribute("clickbutton", row)
+		else
+			self:SetAttribute("type", "macro")
+			self:SetAttribute("macrotext", "")
+		end
+	end)
+end
+
+-- Taste abfragen (Esc bricht ab, nach 10 Sekunden gibt die Abfrage auf)
+function HK.Capture(i)
+	if not HK.capture then
+		local c = CreateFrame("Frame", nil, UIParent)
+		c:SetFrameStrata("TOOLTIP")
+		c:SetScript("OnKeyDown", function(self, key)
+			self:SetPropagateKeyboardInput(false)
+			if HK.MODS[key] then return end
+			self:EnableKeyboard(false)
+			self:Hide()
+			HK.capturing = nil
+			local slot = self.slot
+			if key ~= "ESCAPE" and slot then
+				HK.Keys()[slot] = (IsAltKeyDown() and "ALT-" or "") .. (IsControlKeyDown() and "CTRL-" or "")
+					.. (IsShiftKeyDown() and "SHIFT-" or "") .. key
+				HK.Bind()
+			end
+			if SEM.RefreshDialog then SEM:RefreshDialog() end
+		end)
+		HK.capture = c
+	end
+	HK.capture.slot = i
+	HK.capturing = i
+	HK.capture:Show()
+	HK.capture:EnableKeyboard(true)
+	C_Timer.After(10, function()
+		if HK.capturing == i then
+			HK.capture:EnableKeyboard(false)
+			HK.capture:Hide()
+			HK.capturing = nil
+			if SEM.RefreshDialog then SEM:RefreshDialog() end
+		end
+	end)
+end
+
+function HK.Row(i)
+	return { type = "keybind",
+		name = T("Taste für Quest ", "Key for quest ") .. i .. T(" im Fenster", " in the window"),
+		get = function() return HK.Pretty(HK.Keys()[i]) end,
+		waiting = function() return HK.capturing == i end,
+		onClick = function() HK.Capture(i) end,
+		onClear = function() HK.Keys()[i] = nil; HK.Bind() end }
 end
 
 -- Symbole neu aufbauen (nur außerhalb des Kampfs: gesicherte Knöpfe)
@@ -518,7 +658,7 @@ local function Apply()
 	frame.orderSig = nil   -- wird unten aus den Quest-IDs der Reihenfolge gebildet (siehe Ticker)
 
 	-- Aussehen nach Einstellung: Symbolgröße, Symbole je Zeile, Abstand, Deckkraft, Zähler
-	local size = Get("iconSize", 40)
+	local size = Get("iconSize", 28)
 	local perRow = Get("perRow", 6)
 	local gap = Get("gap", 6)
 	local opacity = Get("opacity", ui.BG[4] or 0.96)
@@ -529,7 +669,7 @@ local function Apply()
 
 	-- Kompakter Modus: keine Kopfzeile, keine Gruppen, enge Abstände, der Zähler sitzt im Symbol
 	local compact = Get("compact", false)
-	local groupBy = Get("groupByQuest", false) and not compact
+	local groupBy = Get("groupByQuest", true) and not compact
 	if compact then gap = math.min(gap, 3) end
 
 	-- Kopfzeile ausblenden: Band und Titel weg, die Symbole rücken nach oben
@@ -734,6 +874,23 @@ local function Apply()
 		if g.questId and sig[#sig] ~= g.questId then sig[#sig + 1] = g.questId end
 	end
 	frame.questOrder, frame.orderSig = sig, table.concat(sig, ",")
+
+	-- Quests in der Reihenfolge des Fensters samt ihren Mobs: die Tasten (HK) beziehen sich darauf
+	HK.quests = {}
+	local byQuest = {}
+	for _, sec in ipairs(sections) do
+		for _, g in ipairs(sec.items) do
+			if g.questId and not g.item then
+				local q = byQuest[g.questId]
+				if not q then
+					q = { id = g.questId, title = g.quest, names = {} }
+					byQuest[g.questId] = q
+					HK.quests[#HK.quests + 1] = q
+				end
+				q.names[g.name] = true
+			end
+		end
+	end
 end
 
 -- Beim Laufen ändert sich die Entfernung: alle paar Sekunden prüfen, ob die Quests anders sortiert wären, und nur dann neu
@@ -818,7 +975,8 @@ SlashCmdList["SQHTARGETS"] = function()
 	ScanNear()
 	say(T("Nähe", "Nearby") .. ": " .. (nearDebug.plates or 0) .. " " .. T("Namensschilder", "nameplates") .. ", "
 		.. (nearDebug.secret or 0) .. " " .. T("geheime Namen", "secret names") .. ", " .. T("erkannt", "found") .. ": "
-		.. table.concat(nearDebug.names or {}, ", ") .. " | enemy plates CVar: " .. tostring(GetCVar and GetCVar("nameplateShowEnemies")))
+		.. table.concat(nearDebug.names or {}, ", ") .. " | enemy plates CVar: " .. tostring(GetCVar and GetCVar("nameplateShowEnemies"))
+		.. " | " .. T("getaggt", "tagged") .. ": " .. (nearDebug.tapped or 0) .. (nearDebug.tapErr and (" | " .. nearDebug.tapErr) or ""))
 	for _, g in ipairs(list) do say("  " .. g.name .. " " .. g.have .. "/" .. g.need) end
 	local ok2, err = pcall(Apply)
 	say(T("Fenster", "Window") .. ": " .. (ok2 and "ok" or ("Fehler: " .. tostring(err)))
@@ -873,11 +1031,11 @@ ev:SetScript("OnEvent", function(_, event)
 					set = function(v) Cfg().maxHeight = v; Apply() end,
 					format = function(v) return v .. " px" end },
 				{ type = "check", name = T("Nach Quests gruppieren", "Group by quest"),
-					get = function() return Get("groupByQuest", false) end,
+					get = function() return Get("groupByQuest", true) end,
 					relayout = true,
 					set = function(v) Cfg().groupByQuest = v and true or false; Apply() end },
 				{ type = "slider", name = T("Abstand unter der Gruppenzeile", "Space below the group row"), min = 0, max = 16, step = 1,
-					hidden = function() return not Get("groupByQuest", false) end,
+					hidden = function() return not Get("groupByQuest", true) end,
 					get = function() return Get("headGap", 6) end,
 					set = function(v) Cfg().headGap = v; Apply() end,
 					format = function(v) return v .. " px" end },
@@ -888,7 +1046,7 @@ ev:SetScript("OnEvent", function(_, event)
 					get = function() return Get("maxPerQuest", 6) end,
 					set = function(v) Cfg().maxPerQuest = v; Apply() end },
 				{ type = "slider", name = T("Symbolgröße", "Icon size"), min = 28, max = 72, step = 2,
-					get = function() return Get("iconSize", 40) end,
+					get = function() return Get("iconSize", 28) end,
 					set = function(v) Cfg().iconSize = v; Apply() end,
 					format = function(v) return v .. " px" end },
 				{ type = "slider", name = T("Breite", "Width"), min = 0, max = 600, step = 10,
@@ -922,6 +1080,9 @@ ev:SetScript("OnEvent", function(_, event)
 				{ type = "check", name = T("Anvisiertes Monster mit Totenkopf markieren", "Mark the targeted mob with the skull"),
 					get = function() return Get("markSkull", true) end,
 					set = function(v) Cfg().markSkull = v and true or false; Apply() end },
+				{ type = "check", name = T("Anvisiertes Monster anpingen (Blizzard-Ping)", "Ping the targeted mob (Blizzard ping)"),
+					get = function() return Get("pingMark", true) end,
+					set = function(v) Cfg().pingMark = v and true or false; Apply() end },
 				{ type = "check", name = T("Symbole grau, solange das Monster nicht in der Nähe ist", "Gray icons while the mob is not nearby"),
 					get = function() return Get("grayAway", true) end,
 					set = function(v) Cfg().grayAway = v and true or false; near = {}; UpdateNear() end },
@@ -937,10 +1098,14 @@ ev:SetScript("OnEvent", function(_, event)
 				{ type = "check", name = T("Nur Quests dieses Gebiets", "Only quests of this zone"),
 					get = function() return Get("zoneOnly", true) end,
 					set = function(v) Cfg().zoneOnly = v and true or false; Apply() end },
+				{ type = "header", name = "Hotkeys", id = "keys" },
+				HK.Row(1), HK.Row(2), HK.Row(3), HK.Row(4), HK.Row(5),
 			},
 		})
+		HK.Bind()
 		Soon()
 	elseif event == "PLAYER_REGEN_ENABLED" then
+		if HK.pendingBind then HK.Bind() end
 		if pending then Apply() end
 	else
 		Soon()

@@ -963,7 +963,7 @@ function S.targets(host, c)
 	local hide = (db.hideHeader or db.compact) and true or false   -- kompakt: keine Kopfzeile
 
 	local HEAD, PAD = 28, 8
-	local size, perRow, gap = db.iconSize or 40, db.perRow or 6, db.gap or 6
+	local size, perRow, gap = db.iconSize or 28, db.perRow or 6, db.gap or 6
 	local opacity = db.opacity or ui.BG[4] or 0.96
 	local showCount = db.showCount ~= false
 	local cc = db.countColor or { r = 0.94, g = 0.75, b = 0.29 }
@@ -991,7 +991,7 @@ function S.targets(host, c)
 	w.band:SetColorTexture(ui.BAND[1], ui.BAND[2], ui.BAND[3], opacity)
 
 	local compact = db.compact and true or false
-	local groupBy = db.groupByQuest and not compact and true or false
+	local groupBy = db.groupByQuest ~= false and not compact and true or false
 	if compact then hide = true; gap = math.min(gap, 3) end
 	local HEAD_H, SEC_GAP = 22, 8
 	local headGap = db.headGap or 6

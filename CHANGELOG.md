@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.33
+- "Quest actions": new option "Ping the targeted mob (Blizzard ping)" (on by default). Clicking an icon or using a hotkey then also sends the game's ping to the mob, so the group sees where it is. Needs the client's ping command; in a raid only for the leader and assistants.
+- "Quest actions": new defaults: "Group by quest" and the ping are on, the icon size is 28 px. Settings you already changed stay.
+- "Quest actions": up to 5 keys, set in the settings (section "Hotkeys"). Key n targets the next free mob of the nth quest in the window; every further press goes to the next one. Mobs already tagged by others are skipped (checked on the nameplates, so it only covers mobs within nameplate range). Out of combat only; in combat the key keeps the last target. No default keys.
+- Icons stay gray while the only mobs nearby are tagged by others.
+- Chat messages: without a group (channel "Group") or guild (channel "Guild") nothing is reported any more, so progress and turn-in lines no longer appear in your own chat window.
+
 ## 1.0.30
 - "Quests nearby": two tabs under the title band, "Active" and "Hidden (n)". The tab "Hidden" lists the hidden quests as normal rows (goals, counters, bars, group progress) with the label "hidden" or "not in log"; a right-click shows a quest again. The window stays open on that tab until you close it. In the small view there are no tabs. The preview in the settings window shows the tabs too.
 - Hidden quests that are not in your quest log any more (turned in, abandoned) are removed from the list automatically, once the quest log has been read.
