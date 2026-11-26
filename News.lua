@@ -5,6 +5,10 @@ if not (SEM and SEM.RegisterNews) then return end
 
 SEM:RegisterNews("SexyQuestHelper", {
 	color = { 0.42, 0.71, 1 },
+	{ v = "1.0.35",
+		{ "Quest-Aktionen", "Mit „Ausblenden“ oder „Im Kampf ausblenden“ ist das Fenster jetzt ganz verschwunden. Vorher war es nur durchsichtig, die Symbole nahmen dort weiter Mausklicks an.",
+		  "Quest actions", "With \"Hide\" or \"Hide in combat\" the window is gone completely now. Before it was only transparent, and the icons kept taking mouse clicks there." },
+	},
 	{ v = "1.0.33",
 		{ "Quest-Aktionen: Ping", "Neue Option „Anvisiertes Monster anpingen“ (an): Klick auf ein Symbol oder ein Hotkey schickt zusätzlich Blizzards Ping auf den Mob, damit die Gruppe sieht, wo er steht. Im Schlachtzug nur als Leiter oder Assistent.",
 		  "Quest actions: ping", "New option \"Ping the targeted mob\" (on): clicking an icon or using a hotkey also sends the game's ping to the mob so the group sees where it is. In a raid only for the leader and assistants." },

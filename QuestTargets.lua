@@ -341,8 +341,23 @@ end
 -- Avatare sichtbar. Darum die Alpha des Fensters an die Modelle weitergeben.
 local DIM = 0.4   -- Deckkraft eines grauen Symbols (kein Monster in der Nähe)
 local function ModelAlpha(row, a) row.model:SetAlpha((a or frame:GetAlpha()) * (row.dim and DIM or 1)) end
+-- "Ausblenden" und "Im Kampf ausblenden" setzen von SexyEditMode aus nur die Transparenz: ein durchsichtiges Fenster fängt aber weiter
+-- Mausklicks ab, und die Symbole (gesicherte Knöpfe) lösen ihr Makro aus. Darum wird das Fenster dann ganz versteckt (Hide
+-- am Fenster selbst ist auch im Kampf erlaubt, die Knöpfe sind nicht betroffen). "Nur bei Mouseover" bleibt durchsichtig: dort
+-- muss die Maus das Fenster erreichen.
+local function HiddenBySetting()
+	local d = Cfg().editMode
+	if not d or editing then return false end
+	return (d.hidden or (d.hideInCombat and (InCombatLockdown() or UnitAffectingCombat("player")))) and true or false
+end
+
+local function SyncShown()
+	frame:SetShown(frame.hasContent and not HiddenBySetting() and true or false)
+end
+
 hooksecurefunc(frame, "SetAlpha", function(self, a)
 	for _, row in ipairs(rows) do ModelAlpha(row, a) end
+	SyncShown()
 end)
 
 -- Nähe: Ein Monster gilt als nah, wenn sein Namensschild (Nameplate) da ist, also im Sichtbereich der Schilder (etwa 40 Meter,
@@ -865,7 +880,8 @@ local function Apply()
 		end
 	end
 	frame:SetHeight(head + viewH)
-	frame:SetShown(#sections > 0)
+	frame.hasContent = #sections > 0
+	SyncShown()
 	UpdateScroll()
 
 	-- Reihenfolge der Quests merken: der Ticker baut neu auf, wenn sie sich durch Laufen ändert

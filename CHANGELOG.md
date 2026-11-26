@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.35
+- "Quest actions": with "Hide" or "Hide in combat" the window is hidden completely now. Before it was only transparent, so the icons still took mouse clicks (and ran their macro) where nothing was visible.
+
 ## 1.0.33
 - "Quest actions": new option "Ping the targeted mob (Blizzard ping)" (on by default). Clicking an icon or using a hotkey then also sends the game's ping to the mob, so the group sees where it is. Needs the client's ping command; in a raid only for the leader and assistants.
 - "Quest actions": new defaults: "Group by quest" and the ping are on, the icon size is 28 px. Settings you already changed stay.
