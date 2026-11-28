@@ -85,6 +85,7 @@ local members = {}            -- [name] = { zone = "", ids = { [id] = true } }
 local scanTimer, ignoreUntil = nil, 0
 local progressBy = {}         -- [name] = { [questID] = { pct = 0-100, ready = bool } }: Fortschritt der Mitglieder
 local myProgress = {}         -- dasselbe fuer mich
+ST.detailsAsked = {}   -- wie oft die Ziele eines Mitglieds schon angefragt wurden
 local detailsBy = {}          -- [name] = { [questID] = { "Zieltext", ... } }: die Ziele der Mitglieder
 local Refresh
 local anyAddonMsgs = 0
@@ -836,7 +837,7 @@ local function QuestProgress(id)
 				end
 				if type(o.text) == "string" and o.text ~= "" then
 					texts[#texts + 1] = o.text
-					data[#data + 1] = { text = o.text, have = tonumber(o.numFulfilled) or 0, need = required, finished = o.finished and true or false }
+					data[#data + 1] = { text = o.text, have = tonumber(o.numFulfilled) or 0, need = required, finished = o.finished and true or false, type = o.type }
 				end
 			end
 		end
@@ -1406,9 +1407,25 @@ end
 MV.COMBAT = { minMain = "combatMain", minHelp = "combatHelp", minNear = "combatNear" }
 MV.DB = { minMain = "editMode", minHelp = "helpMode", minNear = "nearMode" }
 
--- Zeigt das Fenster gerade die kleine Ansicht? (selbst eingeklappt, oder im Kampf eingestellt)
+-- In Dungeons und Schlachtzügen (je Fenster): normal anzeigen, kleine Ansicht oder ausblenden (cfg.instMain/Help/Near)
+MV.INST = { minMain = "instMain", minHelp = "instHelp", minNear = "instNear" }
+
+function MV.InDungeon()
+	local inInstance, kind = IsInInstance()
+	return inInstance and (kind == "party" or kind == "raid") and true or false
+end
+
+-- "show", "mini" oder "hide": außerhalb von Dungeons und Schlachtzügen immer "show"
+function MV.InstMode(key)
+	local mode = cfg[MV.INST[key]]
+	if (mode == "mini" or mode == "hide") and MV.InDungeon() then return mode end
+	return "show"
+end
+
+-- Zeigt das Fenster gerade die kleine Ansicht? (selbst eingeklappt, im Kampf oder in der Instanz eingestellt)
 function MV.IsMin(key)
 	if cfg[key] then return true end
+	if MV.InstMode(key) == "mini" then return true end
 	return cfg[MV.COMBAT[key]] == "mini" and InCombat() and true or false
 end
 
@@ -1435,6 +1452,21 @@ function MV.CombatSpec(minKey)
 			local d = SexyQuestHelperDB[dbk]
 			if d then d.hideInCombat = (v == "hide") or nil end
 			cfg[ck] = (v == "mini") and "mini" or "show"
+			MV.CombatRefresh()
+		end }
+end
+
+function MV.InstanceSpec(minKey)
+	local ik = MV.INST[minKey]
+	return { type = "select", name = T("In Dungeons und Schlachtzügen", "In dungeons and raids"),
+		options = {
+			{ value = "show", label = T("Normal anzeigen", "Show normally") },
+			{ value = "mini", label = T("Kleine Ansicht", "Small view") },
+			{ value = "hide", label = T("Ausblenden", "Hide") },
+		},
+		get = function() return cfg[ik] or "show" end,
+		set = function(v)
+			cfg[ik] = v
 			MV.CombatRefresh()
 		end }
 end
@@ -1677,6 +1709,7 @@ local function CreateUI()
 			MV.Spec("showStatus"), MV.Spec("showDividers"), MV.Spec("showButtons"),
 			{ type = "header", name = T("Verhalten", "Behavior"), id = "behavior" },
 			MV.CombatSpec("minMain"),
+			MV.InstanceSpec("minMain"),
 			{ type = "check", behavior = true, name = T("Fenster \"Mitspielern helfen\" einschalten", "Turn on the \"Help your group\" window"),
 				get = function() return cfg.helpAuto end,
 				set = function(v) cfg.helpAuto = v and true or false; Refresh() end },
@@ -1736,6 +1769,7 @@ end
 
 function Refresh()
 	if not ui then return end
+	if MV.InstMode("minMain") == "hide" and not forceShow then ui:Hide() return end   -- in der Instanz ausgeblendet
 	local entries, hasDiff, sig = BuildEntries(forceShow)
 	ui.sig = sig
 
@@ -1927,6 +1961,50 @@ local function SplitGoalText(text)
 	return text
 end
 
+-- Symbol des Gegenstands eines Gegenstandsziels ("Wolfsfell: 3/8"): QuestieDB kennt die Gegenstands-IDs der Quest, der Name im Zieltext
+-- sagt, welcher gemeint ist; ohne QuestieDB geht es über den Namen (klappt, wenn der Gegenstand dem Spiel bekannt ist, z. B. in den
+-- Taschen). Gefundene Symbole werden gemerkt.
+ST.itemIcons = {}
+
+-- Tötenziel ("Wölfe getötet: 3/8"): ein Schwert statt des Kästchens. Der Typ "monster" kommt aus dem Questlog; bei reinen Zieltexten
+-- (Mitspieler) erkennt Blizzards Text QUEST_MONSTERS_KILLED das Ziel in jeder Sprache.
+local SWORD_ICON = "Interface/Icons/INV_Sword_04"
+local killPattern
+local function IsKillText(text)
+	if killPattern == nil then
+		killPattern = false
+		local fmt = _G.QUEST_MONSTERS_KILLED
+		if type(fmt) == "string" and not fmt:find("%%%d%$") then
+			killPattern = "^" .. fmt:gsub("([%^%$%(%)%.%[%]%*%+%-%?])", "%%%1"):gsub("%%s", ".-"):gsub("%%d", "%%d+") .. "$"
+		end
+	end
+	return killPattern and type(text) == "string" and text:match(killPattern) ~= nil
+end
+
+local function ItemGoalIcon(questId, goalName, strict)
+	if type(goalName) ~= "string" or goalName == "" then return nil end
+	local key = (questId or 0) .. ":" .. goalName
+	if ST.itemIcons[key] then return ST.itemIcons[key] end
+	local icon
+	pcall(function()
+		local instant = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
+		if questId and HasQuestieDB() then
+			local items = (QuestDB.Get(questId, "objectives") or {})[3] or {}
+			local low = strlower(goalName)
+			for _, e in ipairs(items) do
+				local iname = ItemDB.Get(e[1], "name")
+				if type(iname) == "string" and iname ~= "" and low:find(strlower(iname), 1, true) then
+					icon = (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(e[1])) or (instant and select(5, instant(e[1])))
+					break
+				end
+			end
+		end
+		if not icon and instant and not strict then icon = select(5, instant(goalName)) end   -- strict: nur QuestieDB (Zieltexte ohne Typ)
+	end)
+	if icon then ST.itemIcons[key] = icon end
+	return icon
+end
+
 local function GoalList(id, objs, data)
 	local goals = {}
 
@@ -1941,6 +2019,8 @@ local function GoalList(id, objs, data)
 		end
 
 		local goal = { name = name, done = d.finished or (need > 0 and have >= need) or false }
+		if d.type == "item" then goal.itemIcon = ItemGoalIcon(id, name)
+		elseif d.type == "monster" then goal.itemIcon = SWORD_ICON end
 
 		if need > 0 then
 			goal.count = math.min(have, need) .. "/" .. need
@@ -1956,9 +2036,10 @@ local function GoalList(id, objs, data)
 		local name, a, b = SplitGoalText(text)
 
 		if a and b and b > 0 then
-			goals[#goals + 1] = { name = name, count = math.min(a, b) .. "/" .. b, done = a >= b, frac = math.min(1, a / b) }
+			goals[#goals + 1] = { name = name, count = math.min(a, b) .. "/" .. b, done = a >= b, frac = math.min(1, a / b),
+				itemIcon = ItemGoalIcon(id, name, true) or (IsKillText(text) and SWORD_ICON or nil) }
 		else
-			goals[#goals + 1] = { name = name, done = false }
+			goals[#goals + 1] = { name = name, done = false, itemIcon = ItemGoalIcon(id, name, true) }
 		end
 	end
 
@@ -1979,7 +2060,7 @@ end
 
 -- Zeigt die Ziele einer Quest in der Zeile row ab dem Abstand top (Pixel von oben) und gibt die belegte Höhe zurück.
 -- Der Zieltext hat eine feste Breite (bis vor das Etikett) und bricht um, statt über den Fensterrand zu laufen.
-local function RenderGoals(row, goals, top)
+local function RenderGoals(row, goals, top, strike)
 	local y = top
 	for j, goal in ipairs(goals) do
 		local g = GetGoal(row, j)
@@ -1998,15 +2079,65 @@ local function RenderGoals(row, goals, top)
 		g:SetSize(WIDTH - 24, h)
 		y = y + h
 
-		g.icon:SetShown(cfg.showChecks ~= false)
-		if goal.done then
+		g.icon:SetShown(goal.itemIcon ~= nil or cfg.showChecks ~= false)
+		-- dünner heller Rahmen um Gegenstands- und Schwert-Symbole, wie die Icon-Rahmen in SexyHarvester (dünn, hell)
+		if not g.iconEdge then
+			g.iconEdge = g:CreateTexture(nil, "ARTWORK", nil, -1)
+			g.iconEdge:SetTexture("Interface/Buttons/WHITE8x8")
+			g.iconEdge:SetVertexColor(1, 1, 1, 0.5)
+			g.iconEdge:SetPoint("TOPLEFT", g.icon, "TOPLEFT", -1, 1)
+			g.iconEdge:SetPoint("BOTTOMRIGHT", g.icon, "BOTTOMRIGHT", 1, -1)
+		end
+		g.iconEdge:SetShown(goal.itemIcon ~= nil)
+		if goal.itemIcon then
+			-- so hoch wie Schrift und Fortschrittsbalken zusammen (von der Oberkante des Texts bis zur Unterkante des Balkens), höchstens
+			-- so breit wie der Platz vor dem Text; ohne Balken so hoch wie eine Textzeile
+			local barOn = goal.count and (cfg.showBars ~= false)
+			local sz = math.min(18, barOn and (h - 8) or 13)
+			g.icon:SetSize(sz, sz)
+			g.icon:ClearAllPoints()
+			g.icon:SetPoint("TOPLEFT", g, "TOPLEFT", 10, -5)   -- etwas weiter links: so bleibt rechts vom Symbol Platz bis zum Text
+			g.icon:SetTexture(goal.itemIcon)
+			g.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+			g.icon:SetDesaturated(goal.done and true or false)
+			g.icon:SetVertexColor(1, 1, 1)
+			if goal.done then g.text:SetTextColor(0.55, 0.78, 0.6) else g.text:SetTextColor(0.9, 0.87, 0.78) end
+		elseif goal.done then
+			g.icon:SetSize(13, 13); g.icon:ClearAllPoints(); g.icon:SetPoint("TOPLEFT", g, "TOPLEFT", 14, -4)
+			g.icon:SetTexCoord(0, 1, 0, 1)
+			g.icon:SetDesaturated(false)
 			g.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
 			g.icon:SetVertexColor(0.45, 0.9, 0.55)
 			g.text:SetTextColor(0.55, 0.78, 0.6)
 		else
+			g.icon:SetSize(13, 13); g.icon:ClearAllPoints(); g.icon:SetPoint("TOPLEFT", g, "TOPLEFT", 14, -4)
+			g.icon:SetTexCoord(0, 1, 0, 1)
+			g.icon:SetDesaturated(false)
 			g.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Up")
 			g.icon:SetVertexColor(0.75, 0.7, 0.6)
 			g.text:SetTextColor(goal.hint and 0.61 or 0.9, goal.hint and 0.57 or 0.87, goal.hint and 0.5 or 0.78)
+		end
+
+		-- Erledigt: grau und durchgestrichen (nur dort, wo es verlangt wird: "Quests in der Nähe"). Die Linie hat die Breite des Texts
+		-- und liegt in dessen Mitte; Ziele, die umbrechen, werden nur grau (die Zeilenbreiten sind nicht bekannt).
+		if not g.strike then
+			g.strike = g:CreateTexture(nil, "OVERLAY")
+			g.strike:SetHeight(1)
+		end
+		if strike and goal.done then
+			g.text:SetTextColor(0.5, 0.48, 0.43)
+			local th = g.text:GetStringHeight()
+			if th < 20 then
+				g.strike:ClearAllPoints()
+				g.strike:SetPoint("TOPLEFT", g, "TOPLEFT", GOAL_TEXT_X, -(5 + math.floor(th / 2)))
+				g.strike:SetWidth(math.max(1, math.min(g.text:GetStringWidth(), g.text:GetWidth())))
+				g.strike:SetColorTexture(0.5, 0.48, 0.43, 0.9)
+				g.strike:Show()
+			else
+				g.strike:Hide()
+			end
+		else
+			g.strike:Hide()
 		end
 
 		if goal.count then
@@ -2247,19 +2378,18 @@ local function ConfigureHelpRow(row, e, goals)
 		row.fs:SetFontObject("SexyQuestHelperText")
 		row.fs:ClearAllPoints()
 		row.fs:SetPoint("TOPLEFT", row, "TOPLEFT", 10, -6)
-		row.fs:SetWidth(WIDTH - 24 - 10 - 60 - 8 - 6)
+		row.fs:SetWidth(WIDTH - 24 - 10 - (e.ready and (60 + 8 + 6) or 8))
 		row.fs:SetWordWrap(true)
 		row.fs:SetJustifyV("TOP")
 		row.fs:SetText(e.title or QuestName(e.id))
 		row.fs:SetTextColor(0.95, 0.92, 0.86)
 		row.accent:SetColorTexture(e.ready and 0.30 or 0.94, e.ready and 0.76 or 0.75, e.ready and 0.42 or 0.29, 1)
 
+		-- Nur "Bereit" als Etikett; der Stand steht in den Zielen darunter (kein Prozent-Etikett)
 		if e.ready then
 			SetPill(row.pill, "ok", T("Bereit", "Ready"), 60, 16)
-		elseif e.pct then
-			SetPill(row.pill, "warn", e.pct .. " %", 60, 16)
 		else
-			SetPill(row.pill, "grey", "?", 60, 16)
+			HidePill(row.pill)
 		end
 
 		local top = math.max(HELP_ROW_H, math.ceil(row.fs:GetStringHeight()) + 12)
@@ -2356,6 +2486,7 @@ local function CreateHelpUI()
 			MV.Spec("showStatus"), MV.Spec("showAccent"), MV.Spec("accentW"), MV.Spec("showChecks"), MV.Spec("showCounts"), MV.Spec("showButtons"),
 			{ type = "header", name = T("Verhalten", "Behavior"), id = "help" },
 			MV.CombatSpec("minHelp"),
+			MV.InstanceSpec("minHelp"),
 			{ type = "check", behavior = true, name = T("Fenster einschalten (öffnet sich von selbst)", "Turn the window on (opens by itself)"),
 				get = function() return cfg.helpAuto end,
 				set = function(v) cfg.helpAuto = v and true or false; Refresh() end },
@@ -2371,6 +2502,7 @@ end
 
 function RefreshHelp()
 	if not helpUI then return end
+	if MV.InstMode("minHelp") == "hide" and not (ST.helpForce or testMode) then helpUI:Hide() return end   -- in der Instanz ausgeblendet
 	local entries, sig = BuildHelp()
 	helpUI.sig = sig
 	local auto = cfg.helpAuto and scanReady and #entries > 0 and sig ~= ST.helpDismissed
@@ -2393,7 +2525,13 @@ function RefreshHelp()
 		local custom = {}
 		for _, e in ipairs(entries) do
 			if e.kind == "header" then custom[#custom + 1] = { member = true, name = e.name, count = e.count }
-			elseif e.kind == "quest" then custom[#custom + 1] = { help = true, id = e.id, title = e.title, pct = e.pct, ready = e.ready }
+			elseif e.kind == "quest" then
+				-- Titelzeile der Quest und darunter jedes Ziel mit seinem Stand (und dem Symbol bei Gegenstandszielen), wie in
+				-- "Quests in der Nähe"; ohne Einzelziele steht dort der Gesamtfortschritt (HelpGoals)
+				custom[#custom + 1] = { help = true, id = e.id, title = e.title, ready = e.ready }
+				for _, g in ipairs(HelpGoals(e) or {}) do
+					custom[#custom + 1] = { id = e.id, goal = true, indent = true, name = g.name, count = g.count or "", done = g.done, itemIcon = g.itemIcon }
+				end
 			elseif e.text then custom[#custom + 1] = { none = true, text = e.text } end
 		end
 		y = MV.Head(helpUI) + MV.ShowMiniList(helpUI, nil, nil, custom) - 1
@@ -3081,7 +3219,18 @@ end
 -- (ohne passende Einzelziele: Prozent; fertig/abgegeben; ohne Addon nur "?" über die Blizzard-API).
 local CHECK = "|TInterface\\RaidFrame\\ReadyCheck-Ready:11|t"
 
-local function NearMates(id, goalCount)
+-- Index des eigenen Ziels, dessen Name zu dem eines Mitspielers passt (gleich oder einer enthält den anderen), sonst nil
+local function FindGoal(goals, goalName)
+	local low = strlower(tostring(goalName or "")):gsub("^%s+", ""):gsub("%s+$", "")
+	if low == "" then return nil end
+	for k, g in ipairs(goals) do
+		local gl = strlower(tostring(g.name or ""))
+		if gl ~= "" and (gl == low or gl:find(low, 1, true) or low:find(gl, 1, true)) then return k end
+	end
+end
+
+local function NearMates(id, goals)
+	local goalCount = #goals
 	local perGoal, quest = {}, {}
 	if not (cfg.nearMates and id) then return perGoal, quest end
 
@@ -3101,6 +3250,33 @@ local function NearMates(id, goalCount)
 					local done = a >= b
 					perGoal[j][#perGoal[j] + 1] = { name = name, text = done and CHECK or (math.min(a, b) .. "/" .. b),
 						state = done and "done" or "open", tip = goalName .. ": " .. math.min(a, b) .. "/" .. b }
+				end
+			end
+		elseif det and #det > 0 then
+			-- Die Zahl der Ziele passt nicht (z. B. dein Questlog ist nach dem Reload noch nicht geladen, oder der Mitspieler hat ein Ziel
+			-- mehr/weniger geladen): die Ziele nach dem Namen zuordnen; was sich nicht zuordnen lässt, steht als Summe aller Ziele
+			-- ("7/16") bei der Quest, nur ohne lesbare Zahlen als Prozent.
+			local matched, sumHave, sumNeed = 0, 0, 0
+			for _, text in ipairs(det) do
+				local goalName, a, b = SplitGoalText(text)
+				if a and b and b > 0 then
+					sumHave, sumNeed = sumHave + math.min(a, b), sumNeed + b
+					local j = FindGoal(goals, goalName)
+					if j then
+						matched = matched + 1
+						perGoal[j] = perGoal[j] or {}
+						local done = a >= b
+						perGoal[j][#perGoal[j] + 1] = { name = name, text = done and CHECK or (math.min(a, b) .. "/" .. b),
+							state = done and "done" or "open", tip = goalName .. ": " .. math.min(a, b) .. "/" .. b }
+					end
+				end
+			end
+			if matched == 0 then
+				if sumNeed > 0 then
+					quest[#quest + 1] = { name = name, text = sumHave .. "/" .. sumNeed, state = sumHave >= sumNeed and "done" or "open",
+						tip = T("Alle Ziele: ", "All goals: ") .. sumHave .. "/" .. sumNeed }
+				elseif prog then
+					quest[#quest + 1] = { name = name, text = prog.pct .. " %", state = "open", tip = T("Fortschritt ", "Progress ") .. prog.pct .. " %" }
 				end
 			end
 		elseif prog then
@@ -3256,7 +3432,7 @@ function MV.ShowMiniList(f, entries, fresh, custom)
 			list[#list + 1] = e
 		else
 			for _, g in ipairs(goals) do
-				list[#list + 1] = { id = e.id, goal = true, name = g.name, count = g.count or "", done = g.done }
+				list[#list + 1] = { id = e.id, goal = true, name = g.name, count = g.count or "", done = g.done, itemIcon = g.itemIcon }
 			end
 		end
 	end
@@ -3266,6 +3442,17 @@ function MV.ShowMiniList(f, entries, fresh, custom)
 		local row = mini.rows[i]
 		if not row then
 			row = CreateFrame("Button", nil, mini)
+			row.icon = row:CreateTexture(nil, "ARTWORK")   -- Symbol des Gegenstands bei Gegenstandszielen
+			row.icon:SetSize(13, 13)
+			row.icon:SetPoint("LEFT", 0, 0)
+			row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+			row.iconEdge = row:CreateTexture(nil, "ARTWORK", nil, -1)   -- dünner heller Rahmen wie bei SexyHarvester
+			row.iconEdge:SetTexture("Interface/Buttons/WHITE8x8")
+			row.iconEdge:SetVertexColor(1, 1, 1, 0.5)
+			row.iconEdge:SetPoint("TOPLEFT", row.icon, "TOPLEFT", -1, 1)
+			row.iconEdge:SetPoint("BOTTOMRIGHT", row.icon, "BOTTOMRIGHT", 1, -1)
+			row.strike = row:CreateTexture(nil, "OVERLAY")   -- Durchstreichen erledigter Ziele
+			row.strike:SetHeight(1)
 			row.num = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
 			row.num:SetPoint("RIGHT", 0, 0)
 			row.name = row:CreateFontString(nil, "OVERLAY", "SexyQuestHelperSmall")
@@ -3290,6 +3477,23 @@ function MV.ShowMiniList(f, entries, fresh, custom)
 		row:SetPoint("TOPLEFT", mini, "TOPLEFT", 0, -y)
 		row:SetSize(MV.MINI_W - 16, 16)
 		row.questId = e.id
+		local strikeName = false
+		-- Gegenstandsziel: Symbol vor dem Namen (erledigt: ausgegraut), der Name rückt ein
+		if e.itemIcon then
+			row.icon:SetTexture(e.itemIcon)
+			row.icon:SetDesaturated(e.done and true or false)
+			row.icon:Show()
+			row.iconEdge:Show()
+		else
+			row.icon:Hide()
+			row.iconEdge:Hide()
+		end
+		local ix = e.indent and 12 or 0   -- Ziele unter einer Quest rücken ein
+		row.icon:ClearAllPoints()
+		row.icon:SetPoint("LEFT", ix, 0)
+		row.name:ClearAllPoints()
+		row.name:SetPoint("LEFT", ix + (e.itemIcon and 17 or 0), 0)
+		row.name:SetPoint("RIGHT", row.num, "LEFT", -6, 0)
 		if e.none then
 			row.name:SetText(e.text or "-")
 			row.name:SetTextColor(0.6, 0.57, 0.5)
@@ -3303,9 +3507,9 @@ function MV.ShowMiniList(f, entries, fresh, custom)
 			-- Quest des Mitspielers, leicht eingerückt, hinten sein Stand
 			row.name:SetText("  " .. (e.title or QuestName(e.id)))
 			row.name:SetTextColor(0.95, 0.92, 0.86)
-			local pct = e.ready and 100 or e.pct
-			row.num:SetText(pct and (pct .. "%") or "")
-			if e.ready then row.num:SetTextColor(0.30, 0.76, 0.42) else row.num:SetTextColor(0.94, 0.75, 0.29) end
+			-- kein Prozentwert: der Stand steht in den Zielzeilen darunter; nur "bereit", wenn alles erledigt ist
+			row.num:SetText(e.ready and T("bereit", "ready") or "")
+			row.num:SetTextColor(0.30, 0.76, 0.42)
 		else
 			local num, done
 			if e.goal then
@@ -3318,7 +3522,21 @@ function MV.ShowMiniList(f, entries, fresh, custom)
 			row.name:SetTextColor(0.95, 0.92, 0.86)
 			row.num:SetText(num)
 			if done then row.num:SetTextColor(0.30, 0.76, 0.42) else row.num:SetTextColor(0.94, 0.75, 0.29) end
+			-- erledigtes Ziel in "Quests in der Nähe": grau und durchgestrichen
+			if e.goal and done and not custom then
+				row.name:SetTextColor(0.5, 0.48, 0.43)
+				strikeName = true
+			end
 			if fresh and e.id and fresh[e.id] then MV.Glow(row) end
+		end
+		if strikeName then
+			row.strike:ClearAllPoints()
+			row.strike:SetPoint("LEFT", row.name, "LEFT", 0, -1)
+			row.strike:SetWidth(math.max(1, math.min(row.name:GetStringWidth(), row.name:GetWidth())))
+			row.strike:SetColorTexture(0.5, 0.48, 0.43, 0.9)
+			row.strike:Show()
+		else
+			row.strike:Hide()
 		end
 		row:Show()
 		y = y + 16
@@ -3385,6 +3603,10 @@ function RefreshNear()
 	local entries, sig = BuildNear()
 	nearUI.sig = sig
 	local wanted = cfg.nearEnabled and scanReady
+	if MV.InstMode("minNear") == "hide" and not (ST.nearForce or testMode) then   -- in der Instanz ausgeblendet (auch ohne Ton und Leuchten)
+		nearUI:Hide()
+		return
+	end
 
 	-- Ton, wenn eine Quest neu in Reichweite kommt
 	-- (nicht im Flug, auch nicht auf einem Flugpunkt-Flug: dort fliegt man an vielen Quests vorbei)
@@ -3527,7 +3749,7 @@ function RefreshNear()
 			if testMode then
 				perGoal, questMates = e.testMates or {}, e.testQuestMates
 			else
-				perGoal, questMates = NearMates(e.id, #goals)
+				perGoal, questMates = NearMates(e.id, goals)
 			end
 			for j, goal in ipairs(goals) do goal.mates = perGoal[j] end
 			-- Badges zur ganzen Quest rechts im Titel, direkt vor der Entfernung; der Titel endet davor
@@ -3539,7 +3761,7 @@ function RefreshNear()
 			end
 			local mh = 0
 
-			local gh = RenderGoals(row, goals, NEAR_ROW_H - 2 + mh)
+			local gh = RenderGoals(row, goals, NEAR_ROW_H - 2 + mh, true)
 			local h = NEAR_ROW_H + mh + ((gh > 0) and (4 + gh) or 0) + 4
 			row:SetHeight(h)
 			row:Show()
@@ -3734,6 +3956,7 @@ local function CreateNearUI()
 			MV.Spec("glowColor"), MV.Spec("glowAlpha"),
 			{ type = "header", name = T("Verhalten", "Behavior"), id = "near" },
 			MV.CombatSpec("minNear"),
+			MV.InstanceSpec("minNear"),
 			{ type = "check", behavior = true, name = T("Fenster einschalten (öffnet sich in Zielnähe)", "Turn the window on (opens near goals)"),
 				get = function() return cfg.nearEnabled end,
 				set = function(v) cfg.nearEnabled = v and true or false; RefreshNear() end },
@@ -3907,6 +4130,13 @@ frame:SetScript("OnEvent", function(_, event, ...)
 			if not channel then return end
 			for _, name in ipairs(GroupNames()) do
 				if not members[name] and name ~= "Testmate" then
+					Send("R|", channel)
+					return
+				end
+				-- Das Mitglied ist bekannt, aber seine Ziele (Typ "D") fehlen noch, z. B. nach deinem Reload: auch dann anfragen,
+				-- höchstens dreimal je Mitglied (ältere Versionen senden keine Ziele)
+				if members[name] and name ~= "Testmate" and not detailsBy[name] and (ST.detailsAsked[name] or 0) < 3 then
+					ST.detailsAsked[name] = (ST.detailsAsked[name] or 0) + 1
 					Send("R|", channel)
 					return
 				end

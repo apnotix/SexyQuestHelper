@@ -1,6 +1,16 @@
 # Changelog
 
 ## 1.0.35
+- Item and sword icons in the goal lists get a thin light frame like the icons in SexyHarvester (big and small view, and in the previews).
+- "Quests nearby": finished goals are gray and struck through (big and small view). A goal that wraps onto a second line is only grayed. The preview shows a finished goal.
+- New setting "In dungeons and raids" for every window (Quest actions, Quests nearby, Help your group, the main window): show normally, small view (compact mode for the quest actions) or hide. Next to "In combat" in the behavior section. It follows the instance type (dungeon and raid, not battlegrounds or arenas).
+- Kill goals ("Wolves slain: 3/8") show a sword icon in place of the check box in "Quests nearby" (big and small view) and "Help your group", like item goals show their item. Finished goals are grayed out. The previews show it too.
+- Item icons in the big views are as tall as the goal text plus its progress bar (up to 18 px), no longer the size of a check box. The small view keeps its icon size.
+- "Help your group": the small view lists every goal of a member's quest with its progress (like "Quests nearby") instead of one percentage per quest, and the big view no longer shows the percentage badge on a quest (only "Ready"). The preview follows.
+- "Quests nearby": goals that ask for an item ("Wolf pelt: 3/8") show the item's icon in place of the check box. The icon comes from QuestieDB (item IDs of the quest, matched by the name in the goal text), without it through the item name when the game knows the item (e.g. in your bags). A finished goal is grayed out. The preview in the settings window shows it too. The small view shows the icon in front of the goal as well, and so does "Help your group" (matched through QuestieDB there) and its preview.
+- "Quests nearby": group members no longer show only a percentage when their goals are known: if the number of goals differs from yours (for example your quest log is not loaded yet right after a reload) the goals are matched by name, otherwise the sum of all goals ("7/16") is shown. After a reload the addon also asks members whose goals are still missing (up to three times each).
+- "Quest actions": the window width is 200 px by default (before: automatic). A width you set yourself stays; 0 still means automatic.
+- "Quest actions": the mob avatars are still 2D pictures by default now (before: moving 3D models). The picture is drawn once from the creature, like the Dungeon Journal does: the addon looks up the creature's display ID with a hidden model (one at a time, remembered), draws the picture off screen and puts it into the icon after a few seconds; until then the skull stays. A mob you target, mouse over or see on a nameplate gets its picture at once from that unit (like RestedXP's "Active Targets"). That saves the graphics card the many 3D models. New option "Moving 3D models instead of still pictures" (off by default) brings the old look back.
 - "Quest actions": with "Hide" or "Hide in combat" the window is hidden completely now. Before it was only transparent, so the icons still took mouse clicks (and ran their macro) where nothing was visible.
 
 ## 1.0.33

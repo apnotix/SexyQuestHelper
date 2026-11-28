@@ -292,7 +292,7 @@ local function LayoutChips(owner, list, right, top)
 end
 
 -- Ziele einer Quest ab dem Abstand top; liefert die belegte Höhe. goal = { name, count, frac, done, mates }
-local function RenderGoals(row, goals, top, rowWidth, bars, barH, cfg)
+local function RenderGoals(row, goals, top, rowWidth, bars, barH, cfg, strike)
 	local y = top
 	for j, goal in ipairs(goals) do
 		local g = row.goals[j]
@@ -333,15 +333,65 @@ local function RenderGoals(row, goals, top, rowWidth, bars, barH, cfg)
 		g:SetSize(rowWidth, h)
 		y = y + h
 
-		g.icon:SetShown(cfg.showChecks ~= false)
-		if goal.done then
+		g.icon:SetShown(goal.itemIcon ~= nil or cfg.showChecks ~= false)
+		-- dünner heller Rahmen um Gegenstands- und Schwert-Symbole, wie die Icon-Rahmen in SexyHarvester (dünn, hell)
+		if not g.iconEdge then
+			g.iconEdge = g:CreateTexture(nil, "ARTWORK", nil, -1)
+			g.iconEdge:SetTexture("Interface/Buttons/WHITE8x8")
+			g.iconEdge:SetVertexColor(1, 1, 1, 0.5)
+			g.iconEdge:SetPoint("TOPLEFT", g.icon, "TOPLEFT", -1, 1)
+			g.iconEdge:SetPoint("BOTTOMRIGHT", g.icon, "BOTTOMRIGHT", 1, -1)
+		end
+		g.iconEdge:SetShown(goal.itemIcon ~= nil)
+		if goal.itemIcon then
+			-- so hoch wie Schrift und Fortschrittsbalken zusammen (von der Oberkante des Texts bis zur Unterkante des Balkens), höchstens
+			-- so breit wie der Platz vor dem Text; ohne Balken so hoch wie eine Textzeile
+			local barOn = goal.count and bars
+			local sz = math.min(18, barOn and (h - 8) or 13)
+			g.icon:SetSize(sz, sz)
+			g.icon:ClearAllPoints()
+			g.icon:SetPoint("TOPLEFT", g, "TOPLEFT", 10, -5)   -- etwas weiter links: so bleibt rechts vom Symbol Platz bis zum Text
+			g.icon:SetTexture(goal.itemIcon)
+			g.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+			g.icon:SetDesaturated(goal.done and true or false)
+			g.icon:SetVertexColor(1, 1, 1)
+			if goal.done then g.text:SetTextColor(0.55, 0.78, 0.6) else g.text:SetTextColor(0.9, 0.87, 0.78) end
+		elseif goal.done then
+			g.icon:SetSize(13, 13); g.icon:ClearAllPoints(); g.icon:SetPoint("TOPLEFT", g, "TOPLEFT", 14, -4)
+			g.icon:SetTexCoord(0, 1, 0, 1)
+			g.icon:SetDesaturated(false)
 			g.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
 			g.icon:SetVertexColor(0.45, 0.9, 0.55)
 			g.text:SetTextColor(0.55, 0.78, 0.6)
 		else
+			g.icon:SetSize(13, 13); g.icon:ClearAllPoints(); g.icon:SetPoint("TOPLEFT", g, "TOPLEFT", 14, -4)
+			g.icon:SetTexCoord(0, 1, 0, 1)
+			g.icon:SetDesaturated(false)
 			g.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Up")
 			g.icon:SetVertexColor(0.75, 0.7, 0.6)
 			g.text:SetTextColor(0.9, 0.87, 0.78)
+		end
+
+		-- Erledigt: grau und durchgestrichen (nur dort, wo es verlangt wird: "Quests in der Nähe"). Die Linie hat die Breite des Texts
+		-- und liegt in dessen Mitte; Ziele, die umbrechen, werden nur grau (die Zeilenbreiten sind nicht bekannt).
+		if not g.strike then
+			g.strike = g:CreateTexture(nil, "OVERLAY")
+			g.strike:SetHeight(1)
+		end
+		if strike and goal.done then
+			g.text:SetTextColor(0.5, 0.48, 0.43)
+			local th = g.text:GetStringHeight()
+			if th < 20 then
+				g.strike:ClearAllPoints()
+				g.strike:SetPoint("TOPLEFT", g, "TOPLEFT", GOAL_TEXT_X, -(5 + math.floor(th / 2)))
+				g.strike:SetWidth(math.max(1, math.min(g.text:GetStringWidth(), g.text:GetWidth())))
+				g.strike:SetColorTexture(0.5, 0.48, 0.43, 0.9)
+				g.strike:Show()
+			else
+				g.strike:Hide()
+			end
+		else
+			g.strike:Hide()
 		end
 
 		if goal.count then
@@ -544,7 +594,7 @@ function S.help(host, c)
 	local entries = {
 		{ kind = "header", name = "Testmate", class = "MAGE", count = 2 },
 		{ kind = "quest", title = T("Wölfe im Wald", "Wolves in the woods"), pct = 60,
-			goals = { { name = T("Wölfe getötet", "Wolves slain"), count = "5/8", frac = 5 / 8 }, { name = T("Fell gesammelt", "Pelt collected"), count = "1/1", frac = 1, done = true } } },
+			goals = { { name = T("Wölfe getötet", "Wolves slain"), count = "5/8", frac = 5 / 8, itemIcon = "Interface/Icons/INV_Sword_04" }, { name = T("Fell gesammelt", "Pelt collected"), count = "1/1", frac = 1, done = true, itemIcon = "Interface\Icons\INV_Misc_Pelt_Wolf_01" } } },
 		{ kind = "quest", title = T("Der verlorene Beutel", "The lost pouch"), pct = 100, ready = true,
 			goals = { { name = T("Beutel gefunden", "Pouch found"), count = "1/1", frac = 1, done = true } } },
 		-- zweiter Mitspieler: erst damit ist der Abstand der Karten zu sehen
@@ -586,13 +636,13 @@ function S.help(host, c)
 			row.accent:SetShown(cfg.showAccent ~= false)
 			row.fs:SetFontObject("SexyQuestHelperText")
 			row.fs:SetPoint("TOPLEFT", row, "TOPLEFT", 10, -6)
-			row.fs:SetWidth(W - 10 - 60 - 8 - 6)
+			row.fs:SetWidth(W - 10 - (e.ready and (60 + 8 + 6) or 8))
 			row.fs:SetWordWrap(true)
 			row.fs:SetJustifyV("TOP")
 			row.fs:SetText(e.title)
 			row.fs:SetTextColor(0.95, 0.92, 0.86)
 			row.fs:Show()
-			if e.ready then SetPill(row.kind, "ok", T("Bereit", "Ready"), 60, 16) else SetPill(row.kind, "warn", e.pct .. " %", 60, 16) end
+			if e.ready then SetPill(row.kind, "ok", T("Bereit", "Ready"), 60, 16) else HidePill(row.kind) end   -- kein Prozent-Etikett: die Ziele darunter zeigen den Stand
 			row.kind.tex:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, -5)
 			local top = math.max(HELP_ROW_H, math.ceil(row.fs:GetStringHeight()) + 12)
 			local gh = RenderGoals(row, e.goals, top - 2, W, cfg.showBars ~= false, cfg.barH, cfg)
@@ -768,9 +818,9 @@ function S.near(host, c)
 		{ title = T("Wölfe im Wald", "Wolves in the woods"), dist = 34,
 			questMates = mates and { { class = "MAGE", text = "?", state = "none" } } or nil,
 			goals = {
-				{ name = T("Wölfe getötet", "Wolves slain"), count = "5/8", frac = 5 / 8,
+				{ name = T("Wölfe getötet", "Wolves slain"), count = "5/8", frac = 5 / 8, itemIcon = "Interface/Icons/INV_Sword_04",
 					mates = mates and { { class = "MAGE", text = "3/8", state = "open" }, { class = "WARRIOR", text = "8/8", state = "done" } } or nil },
-				{ name = T("Fell gesammelt", "Pelt collected"), count = "0/1", frac = 0 },
+				{ name = T("Fell gesammelt", "Pelt collected"), count = "1/1", frac = 1, done = true, itemIcon = "Interface\\Icons\\INV_Misc_Pelt_Wolf_01" },
 			} },
 		{ title = T("Der verlorene Beutel", "The lost pouch"), dist = 41,
 			goals = { { name = T("Beutel gefunden", "Pouch found"), count = "0/1", frac = 0,
@@ -814,7 +864,7 @@ function S.near(host, c)
 		else
 			row.fs:SetPoint("RIGHT", row, "RIGHT", -(8 + ((qw > 0) and (qw + 4) or 0)), 0)
 		end
-		local gh = RenderGoals(row, e.goals, NEAR_ROW_H - 2, contentW, cfg.showBars ~= false, cfg.barH, cfg)
+		local gh = RenderGoals(row, e.goals, NEAR_ROW_H - 2, contentW, cfg.showBars ~= false, cfg.barH, cfg, true)
 		local h = NEAR_ROW_H + ((gh > 0) and (4 + gh) or 0) + 4
 		row:SetHeight(h)
 		row:Show()
@@ -1008,7 +1058,7 @@ function S.targets(host, c)
 		{ name = T("Quest-Gegenstand", "Quest item"), have = 0, need = 0, quest = T("Andere Quest", "Other quest"), icon = 134414 },
 	}
 	local head = hide and 4 or HEAD
-	local fixedW = db.width or 0
+	local fixedW = db.width or 200
 	if fixedW > 0 then fixedW = math.max(120, fixedW) end
 	local perRowEff = fixedW > 0 and math.max(1, math.floor((fixedW - 2 * PAD + gap) / (size + gap))) or perRow
 	local cell = size + ((showCount and not compact) and 15 or 0)

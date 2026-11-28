@@ -261,7 +261,182 @@ local function Ids()
 	return c.ids
 end
 
+local RebuildSoon   -- wird unten gesetzt (Soon)
+
+-- Option "Standbild": statt eines bewegten 3D-Modells ein ruhendes 2D-Bild, wie es auch das Dungeon Journal macht:
+-- SetPortraitTextureFromCreatureDisplayID zeichnet das Modell einmal in eine Textur. Dafür braucht es die DisplayID der Kreatur; ein
+-- verstecktes Modell (1x1, durchsichtig) lädt nacheinander jede Kreatur-ID und liefert sie mit GetDisplayInfo (gemerkt in
+-- Cfg().displays). Auf dem Forever-Client ist ein neu gezeichnetes Bild bis zum Laden ein schwarzes Quadrat, das über allem liegt:
+-- darum wird es zuerst außerhalb des Bildschirms gezeichnet und erst nach einigen Sekunden ins Symbol gesetzt.
+local STILL_WAIT = 3
+-- Standbild ist der Standard; bewegte 3D-Modelle nur mit der Option "animatedAvatar"
+local function StaticOn() return not Get("animatedAvatar", false) end
+local still = { queue = {}, queued = {} }
+
+local function StillAvailable() return type(SetPortraitTextureFromCreatureDisplayID) == "function" end
+
+local function Displays()
+	local c = Cfg()
+	c.displays = c.displays or {}
+	return c.displays
+end
+
+local function StillStage()
+	if not still.stage then
+		still.stage = CreateFrame("Frame", nil, UIParent)
+		still.stage:SetSize(64, 64)
+		still.stage:SetPoint("TOPLEFT", UIParent, "TOPRIGHT", 10000, 0)   -- weit außerhalb, auch auf Ultrawide-Bildschirmen
+		still.stage:Show()
+	end
+	return still.stage
+end
+
+-- Textur aus dem Symbol nehmen und wegstellen (die Textur wird geleert: das gibt den Render-Slot der Grafikkarte frei)
+local function ClearStill(row)
+	local tex = row.still
+	if not tex then return end
+	pcall(tex.SetTexture, tex, nil)
+	tex:SetParent(StillStage())
+	tex:Hide()
+	row.stillDisplay, row.stillSource, row.stillName = nil, nil, nil
+end
+
+-- Bild aus einer Einheit, die du gerade hast (Ziel, Maus-Über, Namensschild), wie RestedXP in "Active Targets": SetPortraitTexture
+-- zeichnet sofort, das Modell ist ja geladen; kein Warten, keine DisplayID. Das Bild bleibt in der Textur, auch wenn die Einheit weg ist.
+local function DrawUnitStill(row, unit)
+	local tex = row.still
+	if not tex then
+		tex = StillStage():CreateTexture(nil, "ARTWORK")
+		row.still = tex
+	end
+	row.model:Hide()
+	row.portraitId = nil
+	tex:SetParent(row)
+	tex:ClearAllPoints()
+	tex:SetPoint("TOPLEFT", row, "TOPLEFT", 1, -1)
+	tex:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -1, 1)
+	tex:SetDrawLayer("ARTWORK", 1)
+	tex:SetTexCoord(0, 1, 0, 1)
+	pcall(SetPortraitTexture, tex, unit)
+	tex:Show()
+	row.skull:Hide()
+	row.stillSource, row.stillName, row.stillDisplay = "unit", row.mob, nil
+	tex:SetDesaturated(row.dim and true or false)
+	tex:SetAlpha(row.dim and 0.4 or 1)
+end
+
+-- Kreatur-ID -> DisplayID über das versteckte Modell, eine nach der anderen
+local function ResolveNext()
+	if still.current then return end
+	local id = table.remove(still.queue, 1)
+	if not id then return end
+	still.current = id
+	local m = still.model
+	if not m then
+		m = CreateFrame("PlayerModel", nil, UIParent)
+		m:SetSize(1, 1)
+		m:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+		m:SetAlpha(0)
+		still.model = m
+	end
+	local function finish(display)
+		if still.current ~= id then return end
+		still.current = nil
+		still.queued[id] = nil
+		m:SetScript("OnModelLoaded", nil)
+		m:Hide()
+		if type(display) == "number" and display > 0 then
+			Displays()[id] = display
+			if RebuildSoon then RebuildSoon() end
+		end
+		C_Timer.After(0.2, ResolveNext)
+	end
+	m:Show()
+	if m.ClearModel then pcall(m.ClearModel, m) end
+	m:SetScript("OnModelLoaded", function()
+		local ok, display = pcall(m.GetDisplayInfo, m)
+		finish(ok and display or nil)
+	end)
+	if not pcall(m.SetCreature, m, id) then finish(nil) return end
+	C_Timer.After(STILL_WAIT, function() finish(nil) end)   -- lädt das Modell nicht, geht es mit der nächsten ID weiter
+end
+
+local function QueueResolve(id)
+	if still.queued[id] or Displays()[id] == false then return end
+	still.queued[id] = true
+	still.queue[#still.queue + 1] = id
+	ResolveNext()
+end
+
+-- Standbild im Symbol: ohne bekannte DisplayID bleibt der Totenkopf, bis sie aufgelöst ist
+local function StillPortrait(row, id)
+	row.model:Hide()
+	row.portraitId = nil
+	-- schon aus einer Einheit gezeichnet (für denselben Mob): bleibt
+	if row.stillSource == "unit" and row.stillName == row.mob and row.still and row.still:IsShown() then return end
+	local display = id and Displays()[id]
+	if not display then
+		ClearStill(row)
+		row.skull:Show()
+		if id then QueueResolve(id) end
+		return
+	end
+	if row.stillDisplay == display and row.still and row.still:IsShown() then return end
+	local tex = row.still
+	if not tex then
+		tex = StillStage():CreateTexture(nil, "ARTWORK")
+		row.still = tex
+	end
+	row.stillDisplay, row.stillSource, row.stillName = display, "display", nil
+	pcall(tex.SetTexture, tex, nil)
+	tex:SetParent(StillStage())
+	tex:ClearAllPoints()
+	tex:SetAllPoints(StillStage())
+	tex:SetTexCoord(0, 1, 0, 1)
+	tex:Show()
+	pcall(SetPortraitTextureFromCreatureDisplayID, tex, display)
+	local shown = tex:GetTexture()
+	if shown == nil or shown == 0 or shown == "" then   -- der Client kennt kein Bild für diese DisplayID
+		ClearStill(row)
+		row.skull:Show()
+		return
+	end
+	row.skull:Show()   -- bis das Bild geladen ist
+	C_Timer.After(STILL_WAIT, function()
+		if row.still ~= tex or row.stillDisplay ~= display or not StaticOn() then return end
+		tex:SetParent(row)
+		tex:ClearAllPoints()
+		tex:SetPoint("TOPLEFT", row, "TOPLEFT", 1, -1)
+		tex:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -1, 1)
+		tex:SetDrawLayer("ARTWORK", 1)
+		tex:SetTexCoord(0, 1, 0, 1)
+		tex:Show()
+		row.skull:Hide()
+		-- grau wie das Symbol (siehe UpdateNear)
+		tex:SetDesaturated(row.dim and true or false)
+		tex:SetAlpha(row.dim and 0.4 or 1)
+	end)
+end
+
+local function UnitStill(unit)
+	if not (StaticOn() and StillAvailable()) then return end
+	local ok, name = pcall(function()
+		if UnitExists(unit) and not UnitIsPlayer(unit) then return Public(UnitName(unit)) end
+	end)
+	if not ok or type(name) ~= "string" then return end
+	for _, row in ipairs(rows) do
+		if row:IsShown() and not row.itemID and row.mob == name and not (row.stillSource == "unit" and row.stillName == name) then
+			DrawUnitStill(row, unit)
+		end
+	end
+end
+
 local function Portrait(row, id)
+	if StaticOn() and StillAvailable() then
+		StillPortrait(row, id)
+		return
+	end
+	if row.still then ClearStill(row) end
 	if row.portraitId == id then return end
 	row.portraitId = id
 	row.skull:SetShown(not id)
@@ -340,14 +515,28 @@ end
 -- 3D-Modelle übernehmen die Transparenz des Fensters nicht: "Im Kampf ausblenden" (SexyEditMode setzt nur die Alpha) ließe die
 -- Avatare sichtbar. Darum die Alpha des Fensters an die Modelle weitergeben.
 local DIM = 0.4   -- Deckkraft eines grauen Symbols (kein Monster in der Nähe)
-local function ModelAlpha(row, a) row.model:SetAlpha((a or frame:GetAlpha()) * (row.dim and DIM or 1)) end
+local function ModelAlpha(row, a)
+	row.model:SetAlpha((a or frame:GetAlpha()) * (row.dim and DIM or 1))
+	if row.still then   -- Standbild: erbt die Deckkraft des Fensters, nur das Grau kommt dazu
+		row.still:SetAlpha(row.dim and DIM or 1)
+		row.still:SetDesaturated(row.dim and true or false)
+	end
+end
 -- "Ausblenden" und "Im Kampf ausblenden" setzen von SexyEditMode aus nur die Transparenz: ein durchsichtiges Fenster fängt aber weiter
 -- Mausklicks ab, und die Symbole (gesicherte Knöpfe) lösen ihr Makro aus. Darum wird das Fenster dann ganz versteckt (Hide
 -- am Fenster selbst ist auch im Kampf erlaubt, die Knöpfe sind nicht betroffen). "Nur bei Mouseover" bleibt durchsichtig: dort
 -- muss die Maus das Fenster erreichen.
+-- In einem Dungeon oder Schlachtzug? (Einstellung "In Dungeons und Schlachtzügen")
+local function InDungeon()
+	local inInstance, kind = IsInInstance()
+	return inInstance and (kind == "party" or kind == "raid") and true or false
+end
+
 local function HiddenBySetting()
 	local d = Cfg().editMode
-	if not d or editing then return false end
+	if editing then return false end
+	if Get("instance", "show") == "hide" and InDungeon() then return true end
+	if not d then return false end
 	return (d.hidden or (d.hideInCombat and (InCombatLockdown() or UnitAffectingCombat("player")))) and true or false
 end
 
@@ -363,7 +552,6 @@ end)
 -- Nähe: Ein Monster gilt als nah, wenn sein Namensschild (Nameplate) da ist, also im Sichtbereich der Schilder (etwa 40 Meter,
 -- Feinde müssen Schilder anzeigen). Solange keins da ist, ist sein Symbol grau; sobald eins auftaucht, bunt.
 local near = {}
-local RebuildSoon   -- wird unten gesetzt (Soon)
 local function UpdateNear()
 	local on = Get("grayAway", true) and not editing
 	for _, row in ipairs(rows) do
@@ -402,6 +590,7 @@ local function ScanNear()
 	units[#units + 1] = "target"
 	units[#units + 1] = "mouseover"
 	for _, unit in ipairs(units) do
+		UnitStill(unit)
 		pcall(function()
 			if UnitExists(unit) and UnitCanAttack("player", unit) and not UnitIsPlayer(unit) and not UnitIsDead(unit)
 				and not Tapped(unit) then   -- von anderen getaggte Mobs zählen nicht
@@ -683,7 +872,7 @@ local function Apply()
 	frame.band:SetColorTexture(ui.BAND[1], ui.BAND[2], ui.BAND[3], opacity)
 
 	-- Kompakter Modus: keine Kopfzeile, keine Gruppen, enge Abstände, der Zähler sitzt im Symbol
-	local compact = Get("compact", false)
+	local compact = Get("compact", false) or (Get("instance", "show") == "mini" and InDungeon())   -- kompakt auch in der Instanz, wenn so eingestellt
 	local groupBy = Get("groupByQuest", true) and not compact
 	if compact then gap = math.min(gap, 3) end
 
@@ -722,7 +911,7 @@ local function Apply()
 	end
 
 	-- feste Breite (0 = automatisch): bestimmt, wie viele Symbole in eine Reihe passen; "Symbole pro Zeile" gilt dann nicht
-	local fixedW = Get("width", 0)
+	local fixedW = Get("width", 200)
 	if fixedW > 0 then fixedW = math.max(120, fixedW) end
 	local perRowEff = fixedW > 0 and math.max(1, math.floor((fixedW - 2 * PAD + gap) / (size + gap))) or perRow
 
@@ -1007,11 +1196,13 @@ end
 ev:SetScript("OnEvent", function(_, event)
 	if event == "PLAYER_TARGET_CHANGED" then
 		Learn("target")
+		UnitStill("target")
 		Highlight()
 	elseif event == "GROUP_ROSTER_UPDATE" then
 		if not InCombatLockdown() then Soon() end   -- Kanal des Rechtsklick-Makros nachziehen
 	elseif event == "UPDATE_MOUSEOVER_UNIT" then
 		Learn("mouseover")
+		UnitStill("mouseover")
 	elseif event == "PLAYER_LOGIN" then
 		local db = Cfg()
 		db.editMode = db.editMode or {}
@@ -1039,6 +1230,13 @@ ev:SetScript("OnEvent", function(_, event)
 				{ type = "check", name = T("Entfernung zeigen", "Show distance"),
 					get = function() return Get("showDist", true) end,
 					set = function(v) Cfg().showDist = v and true or false; Apply() end },
+				{ type = "check", name = T("Bewegte 3D-Modelle statt Standbildern", "Moving 3D models instead of still pictures"),
+					get = function() return Get("animatedAvatar", false) end,
+					set = function(v)
+						Cfg().animatedAvatar = v and true or false
+						for _, row in ipairs(rows) do row.portraitId = nil end   -- Modelle neu laden, damit die Wahl gleich greift
+						Apply()
+					end },
 				{ type = "check", name = T("Kompakter Modus", "Compact mode"),
 					get = function() return Get("compact", false) end,
 					set = function(v) Cfg().compact = v and true or false; Apply() end },
@@ -1066,7 +1264,7 @@ ev:SetScript("OnEvent", function(_, event)
 					set = function(v) Cfg().iconSize = v; Apply() end,
 					format = function(v) return v .. " px" end },
 				{ type = "slider", name = T("Breite", "Width"), min = 0, max = 600, step = 10,
-					get = function() return Get("width", 0) end,
+					get = function() return Get("width", 200) end,
 					set = function(v) Cfg().width = v; Apply() end,
 					format = function(v) return v == 0 and T("Automatisch", "Automatic") or (v .. " px") end },
 				{ type = "slider", name = T("Symbole pro Zeile", "Icons per row"), min = 2, max = 10, step = 1,
@@ -1090,6 +1288,14 @@ ev:SetScript("OnEvent", function(_, event)
 				{ type = "check", name = T("Fenster einschalten", "Turn the window on"),
 					get = function() return Get("enabled", true) end,
 					set = function(v) Cfg().enabled = v and true or false; Apply() end },
+				{ type = "select", name = T("In Dungeons und Schlachtzügen", "In dungeons and raids"),
+					options = {
+						{ value = "show", label = T("Normal anzeigen", "Show normally") },
+						{ value = "mini", label = T("Kompakter Modus", "Compact mode") },
+						{ value = "hide", label = T("Ausblenden", "Hide") },
+					},
+					get = function() return Get("instance", "show") end,
+					set = function(v) Cfg().instance = v; Apply() end },
 				{ type = "check", name = T("Nur lebende Monster anvisieren", "Only target living mobs"),
 					get = function() return Get("aliveOnly", true) end,
 					set = function(v) Cfg().aliveOnly = v and true or false; Apply() end },
